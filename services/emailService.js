@@ -1,29 +1,19 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-// Create reusable transporter object using Gmail SMTP with App Password
-function getTransporter() {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASS;
-
-  if (!user || !pass) {
-    console.warn('⚠️ GMAIL_USER or GMAIL_APP_PASS is missing in environment variables. Email sending may fail.');
+const getResendClient = () => {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    console.warn('⚠️ RESEND_API_KEY is missing in environment variables. Email sending will fail.');
   }
-
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: user,
-      pass: pass
-    }
-  });
-}
+  return new Resend(apiKey);
+};
 
 /**
- * Send a styled 6-digit verification code to recipient email
+ * Send a styled 6-digit verification code to recipient email via Resend API
  *
- * @param {string} recipientEmail - Target email address
- * @param {string} otpCode - 6-digit numeric OTP
- * @param {string} [purpose='Verification'] - Purpose of OTP
+ * @param {string} recipientEmail Target email address
+ * @param {string} otpCode 6-digit numeric OTP
+ * @param {string} [purpose='Verification'] Purpose of OTP
  * @returns {Promise<Object>}
  */
 async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
@@ -31,8 +21,9 @@ async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
     throw new Error('Recipient email is required');
   }
 
-  const transporter = getTransporter();
-  const senderEmail = process.env.GMAIL_USER || 'no-reply@cricpass.com';
+  const resend = getResendClient();
+  // Use Resend's onboarding domain for testing, or your custom domain if verified
+  const senderEmail = process.env.FROM_EMAIL || 'CricPass <onboarding@resend.dev>';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -79,36 +70,32 @@ async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
     </html>
   `;
 
-  const mailOptions = {
-    from: `"CricPass Verification" <${senderEmail}>`,
-    to: recipientEmail,
+  const response = await resend.emails.send({
+    from: senderEmail,
+    to: [recipientEmail],
     subject: `[CricPass] ${otpCode} is your ${purpose} Verification Code`,
     text: `Your CricPass verification code for ${purpose} is: ${otpCode}. It is valid for 5 minutes.`,
     html: htmlContent
-  };
+  });
 
-  const info = await transporter.sendMail(mailOptions);
-  console.log(`✉️ Email OTP sent to ${recipientEmail} (Message ID: ${info.messageId})`);
-  return info;
+  if (response.error) {
+    throw new Error(response.error.message);
+  }
+
+  console.log(`✉️ Resend Email OTP sent to ${recipientEmail} (ID: ${response.data?.id})`);
+  return response.data;
 }
 
 /**
- * Send official team credentials to the team administrator
- *
- * @param {Object} params
- * @param {string} params.recipientEmail
- * @param {string} params.teamId
- * @param {string} params.teamName
- * @param {string} params.password
- * @returns {Promise<Object>}
+ * Send official team credentials to the team administrator via Resend API
  */
 async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, password }) {
   if (!recipientEmail) {
     throw new Error('Recipient email is required');
   }
 
-  const transporter = getTransporter();
-  const senderEmail = process.env.GMAIL_USER || 'no-reply@cricpass.com';
+  const resend = getResendClient();
+  const senderEmail = process.env.FROM_EMAIL || 'CricPass <onboarding@resend.dev>';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -179,32 +166,29 @@ async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, pass
     </html>
   `;
 
-  const mailOptions = {
-    from: `"CricPass Registry" <${senderEmail}>`,
-    to: recipientEmail,
+  const response = await resend.emails.send({
+    from: senderEmail,
+    to: [recipientEmail],
     subject: `[CricPass] Official Club Credentials: ${teamName} (${teamId})`,
-    text: `Welcome to CricPass!\n\nYour club ${teamName} is registered.\nTeam ID: ${teamId}\nTeam Name: ${teamName}\nPassword: ${password}\n\nPlease store your Team ID, Team Name/Username, and Password safely. Thank you for supporting us!`,
+    text: `Welcome to CricPass!\n\nYour club ${teamName} is registered.\nTeam ID: ${teamId}\nTeam Name: ${teamName}\nPassword: ${password}\n\nPlease store your credentials safely. Thank you!`,
     html: htmlContent
-  };
+  });
 
-  const info = await transporter.sendMail(mailOptions);
-  console.log(`✉️ Team credentials email sent to ${recipientEmail} for ${teamId} (Message ID: ${info.messageId})`);
-  return info;
+  if (response.error) {
+    throw new Error(response.error.message);
+  }
+
+  console.log(`✉️ Team credentials email sent via Resend to ${recipientEmail} (ID: ${response.data?.id})`);
+  return response.data;
 }
 
 /**
- * Send Contact Us / Issue Report email to Master Admin
- *
- * @param {Object} params
- * @param {string} params.userEmail - Email of user reporting the issue
- * @param {string} params.subject - Subject of the issue
- * @param {string} params.issueDescription - Detailed issue message
- * @param {Object} [params.attachment] - Optional attachment { filename, content, contentType }
- * @returns {Promise<Object>}
+ * Send Contact Us / Issue Report email to Master Admin via Resend API
  */
 async function sendContactUsEmail({ userEmail, subject, issueDescription, attachment }) {
-  const transporter = getTransporter();
+  const resend = getResendClient();
   const masterAdminEmail = process.env.GMAIL_USER || 'v70524817@gmail.com';
+  const senderEmail = process.env.FROM_EMAIL || 'CricPass Support <onboarding@resend.dev>';
   const hasUserEmail = Boolean(userEmail && userEmail.trim());
 
   const htmlContent = `
@@ -257,9 +241,9 @@ async function sendContactUsEmail({ userEmail, subject, issueDescription, attach
     </html>
   `;
 
-  const mailOptions = {
-    from: `"CricPass Support Helpdesk" <${masterAdminEmail}>`,
-    to: masterAdminEmail,
+  const response = await resend.emails.send({
+    from: senderEmail,
+    to: [masterAdminEmail],
     ...(hasUserEmail ? { replyTo: userEmail.trim() } : {}),
     subject: `[CricPass Support] ${subject || 'New Issue Reported'}${hasUserEmail ? ` - from ${userEmail.trim()}` : ''}`,
     text: `Support Issue Report:\nSubject: ${subject || 'General Inquiry'}\n\nDescription:\n${issueDescription}`,
@@ -272,11 +256,14 @@ async function sendContactUsEmail({ userEmail, subject, issueDescription, attach
         contentType: attachment.contentType
       }
     ] : []
-  };
+  });
 
-  const info = await transporter.sendMail(mailOptions);
-  console.log(`✉️ Support issue forwarded to Master Admin (${masterAdminEmail})${hasUserEmail ? ` from ${userEmail}` : ''} (Message ID: ${info.messageId})`);
-  return info;
+  if (response.error) {
+    throw new Error(response.error.message);
+  }
+
+  console.log(`✉️ Support issue forwarded via Resend to Master Admin (${masterAdminEmail}) (ID: ${response.data?.id})`);
+  return response.data;
 }
 
 module.exports = {
