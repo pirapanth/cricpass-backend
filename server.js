@@ -27,18 +27,31 @@ const MONGO_URI = process.env.MONGO_URI;
 // ==========================================
 // Middleware Configuration
 // ==========================================
+const allowedOrigins = [
+  'https://cricpass.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  process.env.CLIENT_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: [
-    'http://localhost:5173', 
-    'https://cricpass.vercel.app' // Authorizes your live Vercel frontend domain
-  ],
+  origin: (origin, callback) => {
+    // Permit requests with no origin (e.g. mobile apps, curl, server-to-server health checks)
+    if (!origin) return callback(null, true);
+    
+    // Explicitly permit registered domains or any Vercel deployment preview
+    if (allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+      return callback(null, true);
+    }
+    
+    return callback(new Error(`Origin ${origin} not permitted by CORS policy`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  optionsSuccessStatus: 200
 }));
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
