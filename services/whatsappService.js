@@ -15,11 +15,6 @@ let isInitializing = false;
 
 /**
  * Format any phone number into international digit string (defaults to Sri Lanka +94)
- * E.g., "0771234567" -> "94771234567", "+94 77 123 4567" -> "94771234567"
- *
- * @param {string} rawPhone
- * @param {string} [defaultCountryCode='94']
- * @returns {string} Digits only with country code
  */
 function formatPhoneNumber(rawPhone, defaultCountryCode = '94') {
   if (!rawPhone) return '';
@@ -50,10 +45,9 @@ async function initializeWhatsAppClient() {
   isInitializing = true;
 
   try {
-    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
     let authStrategy;
 
-    // Use RemoteAuth with wwebjs-mongo if Mongo is connected or URI available
+    // Use RemoteAuth with wwebjs-mongo if Mongo is connected
     if (MongoStore && mongoose.connection.readyState === 1) {
       try {
         console.log('📱 [WhatsApp] Initializing RemoteAuth with MongoDB session store...');
@@ -71,9 +65,13 @@ async function initializeWhatsAppClient() {
       authStrategy = new LocalAuth({ clientId: 'cricpass-session', dataPath: './.wwebjs_auth' });
     }
 
+    // Detect browser executable path (Render Linux environment vs local machine)
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
+      (process.platform === 'linux' ? '/usr/bin/google-chrome-stable' : undefined);
+
     const puppeteerOptions = {
-      headless: 'new', // Use modern headless mode
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      headless: true,
+      executablePath: executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -86,10 +84,6 @@ async function initializeWhatsAppClient() {
         '--window-size=1280,720'
       ]
     };
-
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    }
 
     client = new Client({
       authStrategy: authStrategy,
@@ -142,11 +136,6 @@ async function initializeWhatsAppClient() {
 
 /**
  * Send 6-digit WhatsApp OTP verification message
- *
- * @param {string} phoneNumber Recipient phone number
- * @param {string} otpCode 6-digit numeric OTP
- * @param {string} [purpose='Verification'] Purpose of the OTP
- * @returns {Promise<Object>}
  */
 async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
   if (!phoneNumber) {
@@ -176,7 +165,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 
   console.log(`📱 [WhatsApp] Dispatching OTP [${otpCode}] to ${chatId} (${purpose})...`);
 
-  // If WhatsApp client is initialized and ready, send live message
   if (client && isReady) {
     try {
       const response = await client.sendMessage(chatId, messageText);
@@ -192,7 +180,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
       throw new Error(`WhatsApp delivery failed: ${sendErr.message}`);
     }
   } else {
-    // If client is still syncing or in headless initial state, log clearly
     console.warn(`⚠️ [WhatsApp] Client is not ready yet (ready status: ${isReady}). OTP: ${otpCode} for ${cleanPhone}`);
     return {
       success: true,
