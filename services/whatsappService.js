@@ -65,13 +65,11 @@ async function initializeWhatsAppClient() {
       authStrategy = new LocalAuth({ clientId: 'cricpass-session', dataPath: './.wwebjs_auth' });
     }
 
-    // Detect browser executable path (Render Linux environment vs local machine)
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
-      (process.platform === 'linux' ? '/usr/bin/google-chrome-stable' : undefined);
+    // Only set executablePath if the environment variable is explicitly defined
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 
     const puppeteerOptions = {
       headless: true,
-      executablePath: executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -84,6 +82,10 @@ async function initializeWhatsAppClient() {
         '--window-size=1280,720'
       ]
     };
+
+    if (executablePath) {
+      puppeteerOptions.executablePath = executablePath;
+    }
 
     client = new Client({
       authStrategy: authStrategy,
