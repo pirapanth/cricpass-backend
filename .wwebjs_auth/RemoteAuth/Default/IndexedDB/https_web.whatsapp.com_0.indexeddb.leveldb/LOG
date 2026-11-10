@@ -1,0 +1,21 @@
+2026/11/10-22:48:23.761 3ea4 Creating DB D:\WORK\FREELANCE\CricPass\backend\.wwebjs_auth\RemoteAuth\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb since it was missing.
+2026/11/10-22:48:23.775 3ea4 Reusing MANIFEST D:\WORK\FREELANCE\CricPass\backend\.wwebjs_auth\RemoteAuth\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/11/10-22:49:21.339 3ea4 Level-0 table #5: started
+2026/11/10-22:49:21.368 3ea4 Level-0 table #5: 1011561 bytes OK
+2026/11/10-22:49:21.374 3ea4 Delete type=0 #3
+2026/11/10-22:49:23.632 17fc Level-0 table #7: started
+2026/11/10-22:49:23.670 17fc Level-0 table #7: 976758 bytes OK
+2026/11/10-22:49:23.677 17fc Delete type=0 #4
+2026/11/10-22:49:23.690 17fc Compacting 1@1 + 1@2 files
+2026/11/10-22:49:23.767 17fc Generated table #8@1: 23527 keys, 926823 bytes
+2026/11/10-22:49:23.767 17fc Compacted 1@1 + 1@2 files => 926823 bytes
+2026/11/10-22:49:23.771 17fc compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/11/10-22:49:23.772 17fc Delete type=2 #5
+2026/11/10-22:49:23.772 17fc Delete type=2 #7
+2026/11/10-22:50:05.954 5258 Level-0 table #10: started
+2026/11/10-22:50:05.994 5258 Level-0 table #10: 1016298 bytes OK
+2026/11/10-22:50:05.999 5258 Delete type=0 #6
+2026/11/10-22:50:06.013 5258 Compacting 1@1 + 1@2 files
+2026/11/10-22:50:06.087 5258 Generated table #11@1: 25962 keys, 1177305 bytes
+2026/11/10-22:50:06.088 5258 Compacted 1@1 + 1@2 files => 1177305 bytes
+2026/11/10-22:50:06.091 5258 compacted to: files[ 0 0 1 0 0 0 0 ]

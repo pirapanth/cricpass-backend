@@ -1,4 +1,5 @@
 const { Resend } = require('resend');
+const { sendWhatsAppOTP } = require('./whatsappService');
 
 const getResendClient = () => {
   const apiKey = process.env.RESEND_API_KEY;
@@ -18,7 +19,12 @@ const getResendClient = () => {
  */
 async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
   if (!recipientEmail) {
-    throw new Error('Recipient email is required');
+    throw new Error('Recipient contact is required');
+  }
+
+  // If recipient is a phone number, forward to WhatsApp OTP
+  if (!String(recipientEmail).includes('@')) {
+    return await sendWhatsAppOTP(recipientEmail, otpCode, purpose);
   }
 
   const resend = getResendClient();

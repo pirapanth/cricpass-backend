@@ -17,6 +17,9 @@ const adminRoutes = require('./routes/adminRoutes');
 const otpRoutes = require('./routes/otpRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 
+// Import Services
+const { initializeWhatsAppClient } = require('./services/whatsappService');
+
 // Import Middlewares
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
 
@@ -123,6 +126,11 @@ async function startServer() {
 
     // Ensure Master Admin exists in MongoDB Atlas
     await Admin.seedDefaultAdmin();
+
+    // Initialize WhatsApp Web Client with RemoteAuth / LocalAuth
+    initializeWhatsAppClient().catch((waErr) => {
+      console.warn('⚠️ [WhatsApp] WhatsApp client background initialization notice:', waErr.message);
+    });
 
     const server = app.listen(PORT, () => {
       console.log(`===============================================`);
