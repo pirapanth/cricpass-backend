@@ -187,7 +187,7 @@ async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, pass
  */
 async function sendContactUsEmail({ userEmail, subject, issueDescription, attachment }) {
   const resend = getResendClient();
-  const masterAdminEmail = process.env.GMAIL_USER || 'v70524817@gmail.com';
+  const masterAdminEmail = process.env.GMAIL_USER || 'cricpassadmin@gmail.com';
   const senderEmail = process.env.FROM_EMAIL || 'CricPass Support <onboarding@resend.dev>';
   const hasUserEmail = Boolean(userEmail && userEmail.trim());
 

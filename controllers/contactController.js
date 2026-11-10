@@ -11,7 +11,7 @@ async function submitContactReport(req, res, next) {
     const user_email =
       rawUserEmail && typeof rawUserEmail === 'string' && rawUserEmail.trim()
         ? rawUserEmail.trim()
-        : 'v70524817@gmail.com';
+        : 'cricpassadmin@gmail.com';
     const subject = req.body.subject;
     const issueDescription =
       req.body.issue_description ||
