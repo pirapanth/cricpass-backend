@@ -1,5 +1,6 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const pino = require('pino');
 const mongoose = require('mongoose');
 
@@ -27,25 +28,34 @@ async function initializeWhatsAppClient() {
   try {
     console.log('📱 [WhatsApp] Initializing Baileys pure-socket client...');
     
-    // Use local or file-based auth state (or adapt to MongoDB storage)
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
     sock = makeWASocket({
       auth: state,
-      printQRInTerminal: true,
+      printQRInTerminal: false, // Handled manually below for crisp rendering
       logger: pino({ level: 'silent' })
     });
 
-    sock.udarstven = saveCreds;
-
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
         console.log('\n=============================================================');
-        console.log('📲 CRICPASS WHATSAPP AUTHENTICATION QR CODE (SCAN WITH PHONE)');
+        console.log('📲 CRICPASS WHATSAPP AUTHENTICATION QR CODE');
         console.log('=============================================================\n');
-        qrcode.generate(qr, { small: true });
+        
+        // 1. Render terminal ASCII QR backup
+        qrcodeTerminal.generate(qr, { small: true });
+
+        // 2. Generate browser-scannable Data URL
+        try {
+          const qrImageUrl = await QRCode.toDataURL(qr);
+          console.log('\n🔗 COPY THIS URL & PASTE IN YOUR BROWSER FOR A CRISP QR CODE:');
+          console.log(qrImageUrl);
+          console.log('\n=============================================================\n');
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] Failed to generate browser QR image:', err.message);
+        }
       }
 
       if (connection === 'open') {
