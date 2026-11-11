@@ -6,6 +6,7 @@ const {
   updateTeamPhone,
   getAllTeams,
   getTeamById,
+  lookupTeamsByPhone,
   changeTeamPassword,
   changeTeamEmail
 } = require('../controllers/teamController');
@@ -15,6 +16,9 @@ router.post('/login', loginTeamAdmin);
 
 // Register a new team
 router.post('/register', registerTeam);
+
+// Lookup team(s) by admin WhatsApp phone number (for Forgot Password flow)
+router.post('/lookup-by-phone', lookupTeamsByPhone);
 
 // Change team admin password
 router.put('/change-password', changeTeamPassword);

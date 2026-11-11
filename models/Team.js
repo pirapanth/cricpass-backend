@@ -23,7 +23,8 @@ const teamSchema = new mongoose.Schema(
     },
     admin_email: {
       type: String,
-      required: [true, 'Admin email is required'],
+      required: false,
+      default: '',
       trim: true,
       lowercase: true
     },

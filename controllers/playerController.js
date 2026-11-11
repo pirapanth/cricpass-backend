@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const Team = require('../models/Team');
 const { getRemainingCoolingOffDays, isPlayerEligibleToPlay } = require('../utils/coolingOffCalculator');
+const { formatDisplayPhone } = require('../services/whatsappService');
 
 /**
  * @desc    Search player by NIC number
@@ -44,11 +45,18 @@ async function searchPlayerByNic(req, res, next) {
     const remainingCoolingOffDays = getRemainingCoolingOffDays(player.eligible_to_play_date);
     const eligibleToPlay = isPlayerEligibleToPlay(player.status, player.eligible_to_play_date);
 
-    // Fetch latest transfer record if in cooling-off period to support mutual clearance
+    // Fetch latest transfer record if in cooling-off or pending transfer state
     let latestTransfer = null;
+    let pendingTransfer = null;
     if (player.status === 'COOLING_OFF') {
       const TransferRequest = require('../models/TransferRequest');
       latestTransfer = await TransferRequest.findOne({ player_id: player._id, status: 'APPROVED' })
+        .populate('current_team_id', 'team_id team_name admin_name admin_email phone_number')
+        .populate('new_team_id', 'team_id team_name admin_name admin_email phone_number')
+        .sort({ createdAt: -1 });
+    } else if (player.status === 'PENDING_TRANSFER') {
+      const TransferRequest = require('../models/TransferRequest');
+      pendingTransfer = await TransferRequest.findOne({ player_id: player._id, status: 'PENDING' })
         .populate('current_team_id', 'team_id team_name admin_name admin_email phone_number')
         .populate('new_team_id', 'team_id team_name admin_name admin_email phone_number')
         .sort({ createdAt: -1 });
@@ -78,6 +86,7 @@ async function searchPlayerByNic(req, res, next) {
             }
           : null,
         latest_transfer: latestTransfer,
+        pending_transfer: pendingTransfer,
         created_at: player.createdAt,
         updated_at: player.updatedAt
       }
@@ -105,6 +114,14 @@ async function registerPlayer(req, res, next) {
     }
     if (!phone_number || !phone_number.trim()) {
       return res.status(400).json({ success: false, message: 'Phone number is required' });
+    }
+
+    const formattedPhone = formatDisplayPhone(phone_number.trim());
+    if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Contact phone number must be +94 followed by 9 digits without a leading 0 (e.g. +94771454651)'
+      });
     }
 
     const formattedNic = nic_number.trim().toUpperCase();
@@ -147,7 +164,7 @@ async function registerPlayer(req, res, next) {
     const newPlayer = new Player({
       full_name: full_name.trim(),
       nic_number: formattedNic,
-      phone_number: phone_number.trim(),
+      phone_number: formattedPhone,
       image_url: image_url || null,
       current_team_id: assignedTeamId,
       status: 'ACTIVE',

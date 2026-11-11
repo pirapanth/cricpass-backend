@@ -59,10 +59,10 @@ adminSchema.statics.seedDefaultAdmin = async function () {
         role: 'MASTER_ADMIN',
         phone_number: '+94770000000'
       });
-      console.log('✅ Master Admin seeded in MongoDB Atlas (username: cricpass)');
+      console.log('✅ Master Admin seeded');
     }
   } catch (error) {
-    console.error('Error seeding default Master Admin in MongoDB Atlas:', error.message);
+    console.error('Error seeding default Master Admin:', error.message);
   }
 };
 

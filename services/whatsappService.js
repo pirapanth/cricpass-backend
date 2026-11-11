@@ -13,12 +13,22 @@ let isReady = false;
 function formatPhoneNumber(rawPhone, defaultCountryCode = '94') {
   if (!rawPhone) return '';
   let cleaned = String(rawPhone).replace(/\D/g, '');
-  if (cleaned.startsWith('0')) {
+  if (cleaned.startsWith('940') && cleaned.length === 12) {
+    cleaned = defaultCountryCode + cleaned.slice(3);
+  } else if (cleaned.startsWith('0')) {
     cleaned = defaultCountryCode + cleaned.substring(1);
   } else if (cleaned.length === 9) {
     cleaned = defaultCountryCode + cleaned;
   }
   return cleaned;
+}
+
+/**
+ * Format phone number into "+94XXXXXXXXX" display format
+ */
+function formatDisplayPhone(rawPhone, defaultCountryCode = '94') {
+  const digits = formatPhoneNumber(rawPhone, defaultCountryCode);
+  return digits ? `+${digits}` : '';
 }
 
 /**
@@ -81,6 +91,9 @@ async function initializeWhatsAppClient() {
 /**
  * Send 6-digit WhatsApp OTP verification message
  */
+/**
+ * Send 6-digit WhatsApp OTP verification message
+ */
 async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
   if (!phoneNumber) {
     throw new Error('Recipient phone number is required');
@@ -107,24 +120,71 @@ Your 6-Digit One-Time Password (OTP) is:
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Cricket Registry & Transfer Protocol_`;
 
-  if (sock && isReady) {
+  console.log(`📱 [WhatsApp] Attempting to send OTP to JID: ${jid} (Ready: ${isReady}, Socket exists: ${!!sock})`);
+
+  if (sock) {
     try {
-      const response = await sock.sendMessage(jid, { text: messageText });
-      console.log(`✅ [WhatsApp] OTP delivered successfully to ${jid}`);
+      // Optional number lookup to guarantee Baileys routes to the exact correct JID format
+      let targetJid = jid;
+      try {
+        const [result] = await sock.onWhatsApp(cleanPhone);
+        if (result && result.exists) {
+          targetJid = result.jid;
+        }
+      } catch (lookupErr) {
+        console.warn('⚠️ [WhatsApp] onWhatsApp check skipped/failed, using standard jid:', lookupErr.message);
+      }
+
+      const response = await sock.sendMessage(targetJid, { text: messageText });
+      console.log(`✅ [WhatsApp] OTP successfully delivered to ${targetJid} (ID: ${response?.key?.id})`);
       return { success: true, phone: cleanPhone, messageId: response?.key?.id };
     } catch (err) {
-      console.error(`❌ [WhatsApp] Failed to send message:`, err.message);
+      console.error(`❌ [WhatsApp] Failed to deliver message to ${jid}:`, err.message);
       throw new Error(`WhatsApp delivery failed: ${err.message}`);
     }
   } else {
-    console.warn(`⚠️ [WhatsApp] Client not connected yet. Simulated OTP: ${otpCode}`);
+    console.warn(`⚠️ [WhatsApp] Socket not initialized. Simulated OTP: ${otpCode}`);
     return { success: true, simulated: true, phone: cleanPhone, otpCode };
   }
+}
+
+/**
+ * Send official team admin credentials via WhatsApp
+ */
+async function sendTeamCredentialsWhatsApp({ recipientPhone, teamId, teamName, password }) {
+  if (!recipientPhone) return null;
+  const cleanPhone = formatPhoneNumber(recipientPhone);
+  if (!cleanPhone) return null;
+  const jid = `${cleanPhone}@s.whatsapp.net`;
+
+  const messageText =
+`🏏 *Welcome to CricPass Portal*
+━━━━━━━━━━━━━━━━━━━━━━
+Your team administrator credentials for *${teamName}*:
+
+📋 *Team ID / Username:* \`${teamId}\`
+🔑 *Password:* \`${password}\`
+📱 *WhatsApp Contact:* +${cleanPhone}
+
+🌐 *Login Portal:* https://cricpass.vercel.app
+🔒 Store these credentials safely. Thank you for supporting CricPass!
+━━━━━━━━━━━━━━━━━━━━━━`;
+
+  if (sock && isReady) {
+    try {
+      return await sock.sendMessage(jid, { text: messageText });
+    } catch (err) {
+      console.warn('⚠️ [WhatsApp] Failed to send team credentials message:', err.message);
+    }
+  }
+  return null;
 }
 
 module.exports = {
   initializeWhatsAppClient,
   sendWhatsAppOTP,
+  sendTeamCredentialsWhatsApp,
   formatPhoneNumber,
+  formatDisplayPhone,
   isWhatsAppReady: () => isReady
 };

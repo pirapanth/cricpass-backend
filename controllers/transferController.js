@@ -548,10 +548,59 @@ async function grantMutualClearance(req, res, next) {
   }
 }
 
+/**
+ * @desc    Cancel a pending transfer session and restore player status to ACTIVE
+ * @route   POST /api/transfers/cancel
+ * @access  Public
+ */
+async function cancelTransfer(req, res, next) {
+  try {
+    const { transfer_id, player_id } = req.body;
+
+    if (!transfer_id && !player_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'transfer_id or player_id is required to cancel a pending transfer'
+      });
+    }
+
+    let transfer = null;
+    if (transfer_id && mongoose.Types.ObjectId.isValid(transfer_id)) {
+      transfer = await TransferRequest.findOne({ _id: transfer_id, status: 'PENDING' });
+    }
+    if (!transfer && player_id && mongoose.Types.ObjectId.isValid(player_id)) {
+      transfer = await TransferRequest.findOne({ player_id, status: 'PENDING' }).sort({ createdAt: -1 });
+    }
+
+    const targetPlayerId = transfer?.player_id || (mongoose.Types.ObjectId.isValid(player_id) ? player_id : null);
+
+    if (transfer) {
+      transfer.status = 'REJECTED';
+      await transfer.save();
+    }
+
+    if (targetPlayerId) {
+      const player = await Player.findById(targetPlayerId);
+      if (player && player.status === 'PENDING_TRANSFER') {
+        player.status = 'ACTIVE';
+        await player.save();
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Pending transfer session cancelled. Player status restored to ACTIVE.'
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   initiateTransfer,
   verifyTransferOtp,
   getAllTransfers,
   getTransferById,
-  grantMutualClearance
+  grantMutualClearance,
+  cancelTransfer
 };

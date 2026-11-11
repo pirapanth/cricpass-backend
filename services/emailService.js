@@ -1,16 +1,73 @@
+const nodemailer = require('nodemailer');
 const { Resend } = require('resend');
 const { sendWhatsAppOTP } = require('./whatsappService');
 
-const getResendClient = () => {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    console.warn('⚠️ RESEND_API_KEY is missing in environment variables. Email sending will fail.');
+/**
+ * Dispatch an email via Nodemailer (Gmail SMTP) if GMAIL_USER & GMAIL_APP_PASS are set,
+ * or fall back to Resend when RESEND_API_KEY is configured.
+ */
+async function dispatchEmail({ to, replyTo, subject, text, html, attachments = [], fromLabel = 'CricPass Support' }) {
+  const gmailUser = process.env.GMAIL_USER?.trim();
+  const gmailPass = process.env.GMAIL_APP_PASS?.trim();
+  const resendKey = process.env.RESEND_API_KEY?.trim();
+
+  if (gmailUser && gmailPass) {
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: gmailUser,
+        pass: gmailPass
+      }
+    });
+
+    const info = await transporter.sendMail({
+      from: `"${fromLabel}" <${gmailUser}>`,
+      to: Array.isArray(to) ? to.join(', ') : to,
+      ...(replyTo ? { replyTo } : {}),
+      subject,
+      text,
+      html,
+      ...(attachments.length > 0 ? { attachments } : {})
+    });
+
+    return { provider: 'nodemailer', id: info.messageId };
   }
-  return new Resend(apiKey);
-};
+
+  if (resendKey) {
+    const resend = new Resend(resendKey);
+    const senderEmail = process.env.FROM_EMAIL || `${fromLabel} <onboarding@resend.dev>`;
+    const resendAttachments = attachments.map((att) => ({
+      filename: att.filename,
+      content: Buffer.isBuffer(att.content)
+        ? att.content
+        : Buffer.from(String(att.content || ''), att.encoding || 'base64'),
+      ...(att.contentType ? { contentType: att.contentType } : {})
+    }));
+
+    const response = await resend.emails.send({
+      from: senderEmail,
+      to: Array.isArray(to) ? to : [to],
+      ...(replyTo ? { replyTo } : {}),
+      subject,
+      text,
+      html,
+      ...(resendAttachments.length > 0 ? { attachments: resendAttachments } : {})
+    });
+
+    if (response.error) {
+      throw new Error(response.error.message);
+    }
+
+    return { provider: 'resend', id: response.data?.id };
+  }
+
+  throw new Error(
+    'Email service is not configured. Set GMAIL_USER & GMAIL_APP_PASS (or RESEND_API_KEY) in backend environment variables.'
+  );
+}
 
 /**
- * Send a styled 6-digit verification code to recipient email via Resend API
+ * Send a styled 6-digit verification code to recipient email
  *
  * @param {string} recipientEmail Target email address
  * @param {string} otpCode 6-digit numeric OTP
@@ -26,10 +83,6 @@ async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
   if (!String(recipientEmail).includes('@')) {
     return await sendWhatsAppOTP(recipientEmail, otpCode, purpose);
   }
-
-  const resend = getResendClient();
-  // Use Resend's onboarding domain for testing, or your custom domain if verified
-  const senderEmail = process.env.FROM_EMAIL || 'CricPass <onboarding@resend.dev>';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -76,32 +129,25 @@ async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
     </html>
   `;
 
-  const response = await resend.emails.send({
-    from: senderEmail,
-    to: [recipientEmail],
+  const result = await dispatchEmail({
+    to: recipientEmail,
     subject: `[CricPass] ${otpCode} is your ${purpose} Verification Code`,
     text: `Your CricPass verification code for ${purpose} is: ${otpCode}. It is valid for 5 minutes.`,
-    html: htmlContent
+    html: htmlContent,
+    fromLabel: 'CricPass Verification'
   });
 
-  if (response.error) {
-    throw new Error(response.error.message);
-  }
-
-  console.log(`✉️ Resend Email OTP sent to ${recipientEmail} (ID: ${response.data?.id})`);
-  return response.data;
+  console.log(`✉️ Email OTP sent via ${result.provider} to ${recipientEmail} (ID: ${result.id})`);
+  return result;
 }
 
 /**
- * Send official team credentials to the team administrator via Resend API
+ * Send official team credentials to the team administrator via email
  */
 async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, password }) {
   if (!recipientEmail) {
     throw new Error('Recipient email is required');
   }
-
-  const resend = getResendClient();
-  const senderEmail = process.env.FROM_EMAIL || 'CricPass <onboarding@resend.dev>';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -172,29 +218,23 @@ async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, pass
     </html>
   `;
 
-  const response = await resend.emails.send({
-    from: senderEmail,
-    to: [recipientEmail],
+  const result = await dispatchEmail({
+    to: recipientEmail,
     subject: `[CricPass] Official Club Credentials: ${teamName} (${teamId})`,
     text: `Welcome to CricPass!\n\nYour club ${teamName} is registered.\nTeam ID: ${teamId}\nTeam Name: ${teamName}\nPassword: ${password}\n\nPlease store your credentials safely. Thank you!`,
-    html: htmlContent
+    html: htmlContent,
+    fromLabel: 'CricPass Portal'
   });
 
-  if (response.error) {
-    throw new Error(response.error.message);
-  }
-
-  console.log(`✉️ Team credentials email sent via Resend to ${recipientEmail} (ID: ${response.data?.id})`);
-  return response.data;
+  console.log(`✉️ Team credentials email sent via ${result.provider} to ${recipientEmail} (ID: ${result.id})`);
+  return result;
 }
 
 /**
- * Send Contact Us / Issue Report email to Master Admin via Resend API
+ * Send Contact Us / Issue Report email to cricpassadmin@gmail.com
  */
 async function sendContactUsEmail({ userEmail, subject, issueDescription, attachment }) {
-  const resend = getResendClient();
-  const masterAdminEmail = process.env.GMAIL_USER || 'cricpassadmin@gmail.com';
-  const senderEmail = process.env.FROM_EMAIL || 'CricPass Support <onboarding@resend.dev>';
+  const contactAdminEmail = process.env.CONTACT_RECEIVER_EMAIL || 'cricpassadmin@gmail.com';
   const hasUserEmail = Boolean(userEmail && userEmail.trim());
 
   const htmlContent = `
@@ -247,29 +287,27 @@ async function sendContactUsEmail({ userEmail, subject, issueDescription, attach
     </html>
   `;
 
-  const response = await resend.emails.send({
-    from: senderEmail,
-    to: [masterAdminEmail],
+  const result = await dispatchEmail({
+    to: contactAdminEmail,
     ...(hasUserEmail ? { replyTo: userEmail.trim() } : {}),
     subject: `[CricPass Support] ${subject || 'New Issue Reported'}${hasUserEmail ? ` - from ${userEmail.trim()}` : ''}`,
     text: `Support Issue Report:\nSubject: ${subject || 'General Inquiry'}\n\nDescription:\n${issueDescription}`,
     html: htmlContent,
-    attachments: attachment ? [
-      {
-        filename: attachment.filename,
-        content: attachment.content,
-        encoding: attachment.encoding || 'base64',
-        contentType: attachment.contentType
-      }
-    ] : []
+    attachments: attachment
+      ? [
+          {
+            filename: attachment.filename,
+            content: attachment.content,
+            encoding: attachment.encoding || 'base64',
+            contentType: attachment.contentType
+          }
+        ]
+      : [],
+    fromLabel: 'CricPass Support Desk'
   });
 
-  if (response.error) {
-    throw new Error(response.error.message);
-  }
-
-  console.log(`✉️ Support issue forwarded via Resend to Master Admin (${masterAdminEmail}) (ID: ${response.data?.id})`);
-  return response.data;
+  console.log(`✉️ Support issue forwarded via ${result.provider} to ${contactAdminEmail} (ID: ${result.id})`);
+  return result;
 }
 
 module.exports = {

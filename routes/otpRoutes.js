@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const WhatsAppOtp = require('../models/WhatsAppOtp');
-const { sendWhatsAppOTP, formatPhoneNumber } = require('../services/whatsappService');
+const { sendWhatsAppOTP, formatPhoneNumber, isWhatsAppReady } = require('../services/whatsappService');
 
 /**
  * @route   POST /api/otp/send-whatsapp-otp
@@ -14,7 +14,16 @@ router.post('/send-whatsapp-otp', async (req, res, next) => {
     const rawPhone = req.body.phone || req.body.phoneNumber || req.body.email;
     const purpose = req.body.purpose || 'Verification';
 
+    console.log(`📩 [OTP Route] Incoming ${req.method} ${req.originalUrl}`, {
+      origin: req.headers.origin || 'none',
+      body: req.body,
+      extractedRawPhone: rawPhone,
+      purpose,
+      whatsappReady: isWhatsAppReady(),
+    });
+
     if (!rawPhone || !String(rawPhone).trim()) {
+      console.warn('⚠️ [OTP Route] Rejected send-whatsapp-otp: missing phone in body');
       return res.status(400).json({
         success: false,
         message: 'Recipient WhatsApp phone number is required (with country code)'
@@ -22,8 +31,10 @@ router.post('/send-whatsapp-otp', async (req, res, next) => {
     }
 
     const cleanPhone = formatPhoneNumber(rawPhone);
+    console.log(`📱 [OTP Route] Normalized phone: "${rawPhone}" -> "${cleanPhone}"`);
 
     if (!cleanPhone || cleanPhone.length < 8) {
+      console.warn(`⚠️ [OTP Route] Rejected invalid phone format: "${cleanPhone}"`);
       return res.status(400).json({
         success: false,
         message: 'Invalid phone number format. Please provide a valid number with country code (e.g., 9477XXXXXXX).'
@@ -44,12 +55,19 @@ router.post('/send-whatsapp-otp', async (req, res, next) => {
       purpose: purpose,
       expiresAt: expiresAt
     });
+    console.log(`💾 [OTP Route] Saved OTP in MongoDB for +${cleanPhone} (expires: ${expiresAt.toISOString()})`);
 
     // Send styled message via WhatsApp Web Client
+    let sendResult;
     try {
-      await sendWhatsAppOTP(cleanPhone, otpCode, purpose);
+      sendResult = await sendWhatsAppOTP(cleanPhone, otpCode, purpose);
+      if (sendResult?.simulated) {
+        console.warn(`⚠️ [OTP Route] WhatsApp socket not initialized — OTP for +${cleanPhone} was SIMULATED only, not delivered!`);
+      } else {
+        console.log(`✅ [OTP Route] sendWhatsAppOTP dispatched to +${cleanPhone}:`, sendResult);
+      }
     } catch (waError) {
-      console.error('WhatsApp sending error:', waError.message);
+      console.error(`❌ [OTP Route] WhatsApp sending error for +${cleanPhone}:`, waError.message);
       // Return clear error if delivery failed
       return res.status(500).json({
         success: false,
@@ -60,14 +78,18 @@ router.post('/send-whatsapp-otp', async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: `Verification code successfully sent to WhatsApp (+${cleanPhone})`,
+      message: sendResult?.simulated
+        ? `OTP generated for +${cleanPhone}, but WhatsApp client is not connected yet`
+        : `Verification code successfully sent to WhatsApp (+${cleanPhone})`,
       data: {
         phone: cleanPhone,
+        simulated: Boolean(sendResult?.simulated),
         expiresAt: expiresAt,
         ...(process.env.NODE_ENV !== 'production' && { dev_code: otpCode })
       }
     });
   } catch (error) {
+    console.error('❌ [OTP Route] Unexpected error in /send-whatsapp-otp:', error);
     next(error);
   }
 });
@@ -82,6 +104,12 @@ router.post('/verify-whatsapp-otp', async (req, res, next) => {
     const rawPhone = req.body.phone || req.body.phoneNumber || req.body.email;
     const { code } = req.body;
 
+    console.log(`🔍 [OTP Route] Incoming ${req.method} ${req.originalUrl}`, {
+      origin: req.headers.origin || 'none',
+      rawPhone,
+      hasCode: Boolean(code),
+    });
+
     if (!rawPhone || !code) {
       return res.status(400).json({
         success: false,
@@ -91,11 +119,13 @@ router.post('/verify-whatsapp-otp', async (req, res, next) => {
 
     const cleanPhone = formatPhoneNumber(rawPhone);
     const cleanCode = String(code).trim();
+    console.log(`🔍 [OTP Route] Verifying OTP for normalized phone: +${cleanPhone}`);
 
     // Find the OTP document in MongoDB
     const otpRecord = await WhatsAppOtp.findOne({ phone: cleanPhone });
 
     if (!otpRecord) {
+      console.warn(`⚠️ [OTP Route] Verify failed: no active OTP record found for +${cleanPhone}`);
       return res.status(400).json({
         success: false,
         message: 'No active verification code found for this WhatsApp number. Please request a new code.'
@@ -104,6 +134,7 @@ router.post('/verify-whatsapp-otp', async (req, res, next) => {
 
     // Check if code has expired
     if (new Date() > new Date(otpRecord.expiresAt)) {
+      console.warn(`⚠️ [OTP Route] Verify failed: OTP expired for +${cleanPhone}`);
       await WhatsAppOtp.deleteOne({ _id: otpRecord._id });
       return res.status(400).json({
         success: false,
@@ -113,6 +144,7 @@ router.post('/verify-whatsapp-otp', async (req, res, next) => {
 
     // Verify code match
     if (otpRecord.code !== cleanCode) {
+      console.warn(`⚠️ [OTP Route] Verify failed: invalid OTP supplied for +${cleanPhone}`);
       return res.status(400).json({
         success: false,
         message: 'Invalid verification code. Please check your WhatsApp and try again.'
@@ -121,12 +153,14 @@ router.post('/verify-whatsapp-otp', async (req, res, next) => {
 
     // Code matched! Delete OTP to prevent reuse
     await WhatsAppOtp.deleteOne({ _id: otpRecord._id });
+    console.log(`✅ [OTP Route] OTP verified successfully for +${cleanPhone}`);
 
     return res.status(200).json({
       success: true,
       message: 'OTP verified successfully!'
     });
   } catch (error) {
+    console.error('❌ [OTP Route] Unexpected error in /verify-whatsapp-otp:', error);
     next(error);
   }
 });

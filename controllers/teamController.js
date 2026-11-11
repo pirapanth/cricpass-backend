@@ -4,6 +4,22 @@ const Player = require('../models/Player');
 const PhoneUpdateSession = require('../models/PhoneUpdateSession');
 const { generateOTP, sendSimulatedSMS } = require('../utils/otpGenerator');
 const { sendTeamCredentialsEmail } = require('../services/emailService');
+const { sendTeamCredentialsWhatsApp, formatDisplayPhone, formatPhoneNumber } = require('../services/whatsappService');
+
+/**
+ * Helper to build normalized phone variants so teams stored as 077..., 9477..., or +9477... all match.
+ */
+function buildPhoneVariants(rawPhone) {
+  const digits = formatPhoneNumber(rawPhone);
+  if (!digits) return [];
+  const variants = new Set([String(rawPhone).trim(), digits, `+${digits}`]);
+  if (digits.startsWith('94') && digits.length === 11) {
+    const local9 = digits.slice(2);
+    variants.add(local9);
+    variants.add(`0${local9}`);
+  }
+  return Array.from(variants);
+}
 
 /**
  * Helper to resolve team by ObjectId or team_id string (e.g. "TEAM-001")
@@ -152,12 +168,22 @@ async function registerTeam(req, res, next) {
     if (!admin_name || !admin_name.trim()) {
       return res.status(400).json({ success: false, message: 'admin_name is required' });
     }
-    if (!admin_email || !admin_email.trim()) {
-      return res.status(400).json({ success: false, message: 'admin_email is required' });
-    }
     if (!phone_number || !phone_number.trim()) {
-      return res.status(400).json({ success: false, message: 'phone_number is required' });
+      return res.status(400).json({ success: false, message: 'WhatsApp phone_number is required' });
     }
+
+    const formattedPhone = formatDisplayPhone(phone_number.trim());
+    if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94771454651)'
+      });
+    }
+
+    const normalizedEmail =
+      admin_email && admin_email.trim()
+        ? admin_email.trim().toLowerCase()
+        : `${formattedPhone.replace(/\D/g, '')}@cricpass.lk`;
 
     // Determine final team_id (automatic and unique)
     let finalTeamId = '';
@@ -174,31 +200,45 @@ async function registerTeam(req, res, next) {
       finalTeamId = await generateUniqueTeamId(team_name.trim());
     }
 
-    const rawPassword = password && String(password).trim() ? String(password).trim() : phone_number.trim();
+    const rawPassword = password && String(password).trim() ? String(password).trim() : formattedPhone;
 
     // Create team document with encrypted password
     const team = new Team({
       team_id: finalTeamId,
       team_name: team_name.trim(),
       admin_name: admin_name.trim(),
-      admin_email: admin_email.trim().toLowerCase(),
-      phone_number: phone_number.trim(),
+      admin_email: normalizedEmail,
+      phone_number: formattedPhone,
       password: rawPassword,
       image_url: image_url || null
     });
 
     await team.save();
 
-    // Send official registration email with credentials to team admin
+    // Send official registration credentials via WhatsApp
     try {
-      await sendTeamCredentialsEmail({
-        recipientEmail: team.admin_email,
+      await sendTeamCredentialsWhatsApp({
+        recipientPhone: formattedPhone,
         teamId: finalTeamId,
         teamName: team.team_name,
         password: rawPassword
       });
-    } catch (mailErr) {
-      console.warn('⚠️ Could not dispatch team credentials email:', mailErr.message);
+    } catch (waErr) {
+      console.warn('⚠️ Could not dispatch team credentials WhatsApp:', waErr.message);
+    }
+
+    // Also dispatch email only if a non-placeholder email was provided
+    if (admin_email && admin_email.trim() && !normalizedEmail.endsWith('@cricpass.lk')) {
+      try {
+        await sendTeamCredentialsEmail({
+          recipientEmail: normalizedEmail,
+          teamId: finalTeamId,
+          teamName: team.team_name,
+          password: rawPassword
+        });
+      } catch (mailErr) {
+        console.warn('⚠️ Could not dispatch team credentials email:', mailErr.message);
+      }
     }
 
     const teamObj = team.toObject();
@@ -206,7 +246,7 @@ async function registerTeam(req, res, next) {
 
     return res.status(201).json({
       success: true,
-      message: `Team "${team.team_name}" registered successfully with unique ID: ${finalTeamId}. Official credentials dispatched to ${team.admin_email}.`,
+      message: `Team "${team.team_name}" registered successfully with unique ID: ${finalTeamId}. Official credentials dispatched to WhatsApp (${formattedPhone}).`,
       data: teamObj
     });
   } catch (error) {
@@ -508,18 +548,54 @@ async function getTeamById(req, res, next) {
 }
 
 /**
- * @desc    Change team admin password (after email OTP verification)
+ * @desc    Look up registered team(s) by admin WhatsApp / phone number (for forgot-password flow)
+ * @route   POST /api/teams/lookup-by-phone
+ * @access  Public
+ */
+async function lookupTeamsByPhone(req, res, next) {
+  try {
+    const rawPhone = req.body.phone_number || req.body.phone;
+    if (!rawPhone || !String(rawPhone).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'WhatsApp phone number is required'
+      });
+    }
+
+    const variants = buildPhoneVariants(rawPhone);
+    const teams = await Team.find({ phone_number: { $in: variants } })
+      .select('team_id team_name admin_name phone_number')
+      .sort({ team_name: 1 });
+
+    if (!teams.length) {
+      return res.status(404).json({
+        success: false,
+        message: `No registered club found with WhatsApp number ${formatDisplayPhone(rawPhone) || rawPhone}`
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: teams
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @desc    Change team admin password (after OTP verification)
  * @route   PUT /api/teams/change-password
  * @access  Public
  */
 async function changeTeamPassword(req, res, next) {
   try {
-    const { team_id, new_password } = req.body;
+    const { team_id, phone_number, new_password } = req.body;
 
-    if (!team_id || !new_password) {
+    if ((!team_id && !phone_number) || !new_password) {
       return res.status(400).json({
         success: false,
-        message: 'Both team_id and new_password are required'
+        message: 'Team identifier (team_id or phone_number) and new_password are required'
       });
     }
 
@@ -530,7 +606,14 @@ async function changeTeamPassword(req, res, next) {
       });
     }
 
-    const team = await resolveTeam(team_id);
+    let team = null;
+    if (team_id) {
+      team = await resolveTeam(team_id);
+    }
+    if (!team && phone_number) {
+      const variants = buildPhoneVariants(phone_number);
+      team = await Team.findOne({ phone_number: { $in: variants } });
+    }
     if (!team) {
       return res.status(404).json({ success: false, message: 'Team not found' });
     }
@@ -540,7 +623,11 @@ async function changeTeamPassword(req, res, next) {
 
     return res.status(200).json({
       success: true,
-      message: 'Admin password updated successfully in database!'
+      message: 'Admin password updated successfully in database!',
+      data: {
+        team_id: team.team_id,
+        team_name: team.team_name
+      }
     });
   } catch (error) {
     next(error);
@@ -554,21 +641,13 @@ async function changeTeamPassword(req, res, next) {
  */
 async function changeTeamEmail(req, res, next) {
   try {
-    const { team_id, new_email, new_password } = req.body;
+    const { team_id, new_email, new_phone, new_password } = req.body;
+    const rawContact = new_phone || new_email;
 
-    if (!team_id || !new_email) {
+    if (!team_id || !rawContact) {
       return res.status(400).json({
         success: false,
-        message: 'Both team_id and new_email are required'
-      });
-    }
-
-    const cleanEmail = String(new_email).trim().toLowerCase();
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(cleanEmail)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid email address format'
+        message: 'Both team_id and new WhatsApp phone number / contact are required'
       });
     }
 
@@ -577,22 +656,65 @@ async function changeTeamEmail(req, res, next) {
       return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
-    team.admin_email = cleanEmail;
+    const rawStr = String(rawContact).trim();
+    const isEmailInput = rawStr.includes('@');
+
+    if (isEmailInput) {
+      const cleanEmail = rawStr.toLowerCase();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(cleanEmail)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid email address format'
+        });
+      }
+      team.admin_email = cleanEmail;
+    } else {
+      const formattedPhone = formatDisplayPhone(rawStr);
+      if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
+        return res.status(400).json({
+          success: false,
+          message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94771454651)'
+        });
+      }
+      team.phone_number = formattedPhone;
+      if (!team.admin_email || team.admin_email.endsWith('@cricpass.lk')) {
+        team.admin_email = `${formattedPhone.replace(/\D/g, '')}@cricpass.lk`;
+      }
+    }
+
     if (new_password && String(new_password).trim()) {
       team.password = String(new_password).trim();
     }
     await team.save();
 
-    // Send official email with new credentials to the new email address
-    try {
-      await sendTeamCredentialsEmail({
-        recipientEmail: cleanEmail,
-        teamId: team.team_id,
-        teamName: team.team_name,
-        password: new_password && String(new_password).trim() ? String(new_password).trim() : 'Unchanged (Current Password)'
-      });
-    } catch (mailErr) {
-      console.warn('⚠️ Could not dispatch new credentials email:', mailErr.message);
+    const displayPassword =
+      new_password && String(new_password).trim()
+        ? String(new_password).trim()
+        : 'Unchanged (Current Password)';
+
+    if (isEmailInput) {
+      try {
+        await sendTeamCredentialsEmail({
+          recipientEmail: team.admin_email,
+          teamId: team.team_id,
+          teamName: team.team_name,
+          password: displayPassword
+        });
+      } catch (mailErr) {
+        console.warn('⚠️ Could not dispatch new credentials email:', mailErr.message);
+      }
+    } else {
+      try {
+        await sendTeamCredentialsWhatsApp({
+          recipientPhone: team.phone_number,
+          teamId: team.team_id,
+          teamName: team.team_name,
+          password: displayPassword
+        });
+      } catch (waErr) {
+        console.warn('⚠️ Could not dispatch new credentials WhatsApp:', waErr.message);
+      }
     }
 
     const teamObj = team.toObject();
@@ -600,7 +722,9 @@ async function changeTeamEmail(req, res, next) {
 
     return res.status(200).json({
       success: true,
-      message: `Admin email updated to ${cleanEmail}. Official credentials dispatched to new inbox.`,
+      message: isEmailInput
+        ? `Admin email updated to ${team.admin_email}. Official credentials dispatched.`
+        : `Admin WhatsApp updated to ${team.phone_number}. Official credentials dispatched via WhatsApp.`,
       data: teamObj
     });
   } catch (error) {
@@ -614,6 +738,7 @@ module.exports = {
   updateTeamPhone,
   getAllTeams,
   getTeamById,
+  lookupTeamsByPhone,
   changeTeamPassword,
   changeTeamEmail
 };

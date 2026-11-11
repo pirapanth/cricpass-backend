@@ -41,12 +41,15 @@ app.use(cors({
   origin: (origin, callback) => {
     // Permit requests with no origin (e.g. mobile apps, curl, server-to-server health checks)
     if (!origin) return callback(null, true);
-    
-    // Explicitly permit registered domains or any Vercel deployment preview
-    if (allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+
+    const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+
+    // Explicitly permit registered domains, local dev ports, or any Vercel deployment preview
+    if (allowedOrigins.includes(origin) || isLocalOrigin || origin.endsWith('.vercel.app')) {
       return callback(null, true);
     }
-    
+
+    console.warn(`[CORS Blocked] Rejected request from origin: ${origin}`);
     return callback(new Error(`Origin ${origin} not permitted by CORS policy`));
   },
   credentials: true,
@@ -61,7 +64,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Lightweight request logging in development
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} (Origin: ${req.headers.origin || 'none'})`);
     next();
   });
 }

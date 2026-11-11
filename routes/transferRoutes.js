@@ -5,7 +5,8 @@ const {
   verifyTransferOtp,
   getAllTransfers,
   getTransferById,
-  grantMutualClearance
+  grantMutualClearance,
+  cancelTransfer
 } = require('../controllers/transferController');
 
 // Initiate a transfer request
@@ -13,6 +14,9 @@ router.post('/initiate', initiateTransfer);
 
 // Verify dual OTPs for transfer
 router.post('/verify-otp', verifyTransferOtp);
+
+// Cancel pending transfer session and restore player to ACTIVE
+router.post('/cancel', cancelTransfer);
 
 // Grant mutual clearance (reduces 30-day cooling-off to 14 days)
 router.post('/grant-mutual-clearance', grantMutualClearance);
