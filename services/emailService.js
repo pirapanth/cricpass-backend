@@ -5,32 +5,28 @@ const { sendWhatsAppOTP } = require('./whatsappService');
  * Dispatch an email via Gmail SMTP (Nodemailer) strictly using GMAIL_USER & GMAIL_APP_PASS
  */
 async function dispatchEmail({ to, replyTo, subject, text, html, attachments = [], fromLabel = 'CricPass Support' }) {
-  const gmailUser = process.env.GMAIL_USER?.trim();
-  const gmailPass = process.env.GMAIL_APP_PASS?.trim();
+  const webhookUrl = process.env.GMAIL_WEBHOOK_URL?.trim();
 
-  if (!gmailUser || !gmailPass) {
-    throw new Error('GMAIL_USER and GMAIL_APP_PASS are required in environment variables.');
+  if (!webhookUrl) {
+    throw new Error('GMAIL_WEBHOOK_URL is required in environment variables for Render deployment.');
   }
 
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: gmailUser,
-      pass: gmailPass
-    }
+  const response = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: Array.isArray(to) ? to.join(', ') : to,
+      replyTo: replyTo || 'v70524817@gmail.com',
+      subject,
+      html
+    })
   });
 
-  const info = await transporter.sendMail({
-    from: `"${fromLabel}" <${gmailUser}>`,
-    to: Array.isArray(to) ? to.join(', ') : to,
-    ...(replyTo ? { replyTo } : {}),
-    subject,
-    text,
-    html,
-    ...(attachments.length > 0 ? { attachments } : {})
-  });
+  if (!response.ok) {
+    throw new Error(`Webhook email failed with status ${response.status}`);
+  }
 
-  return { provider: 'nodemailer', id: info.messageId };
+  return { provider: 'google-apps-script', id: Date.now().toString() };
 }
 
 /**
