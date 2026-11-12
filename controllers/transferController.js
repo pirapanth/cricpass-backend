@@ -8,6 +8,7 @@ const {
   calculateEligibleDate,
   getRemainingCoolingOffDays
 } = require('../utils/coolingOffCalculator');
+const { sendTransferCompletedWhatsApp } = require('../services/whatsappService');
 
 /**
  * @desc    Initiate a transfer request between two teams
@@ -353,6 +354,23 @@ async function verifyTransferOtp(req, res, next) {
         .populate('current_team_id', 'team_id team_name admin_name admin_email phone_number')
         .populate('new_team_id', 'team_id team_name admin_name admin_email phone_number');
 
+      // Dispatch WhatsApp notifications to both current and destination team admins
+      try {
+        await sendTransferCompletedWhatsApp({
+          currentTeamPhone: populatedTransfer?.current_team_id?.phone_number,
+          newTeamPhone: populatedTransfer?.new_team_id?.phone_number,
+          playerName: populatedTransfer?.player_id?.full_name || player?.full_name,
+          nicNumber: populatedTransfer?.player_id?.nic_number || player?.nic_number,
+          playerPhone: populatedTransfer?.player_id?.phone_number || player?.phone_number,
+          currentTeamName: populatedTransfer?.current_team_id?.team_name,
+          newTeamName: populatedTransfer?.new_team_id?.team_name,
+          coolingDays,
+          isMutualClearance: false
+        });
+      } catch (waErr) {
+        console.warn('⚠️ [WhatsApp] Failed to dispatch transfer completion WhatsApp messages:', waErr.message);
+      }
+
       return res.status(200).json({
         success: true,
         message: transfer.transfer_type === 'ALLOWED'
@@ -524,6 +542,23 @@ async function grantMutualClearance(req, res, next) {
       player.eligible_to_play_date = newEligibleDate;
     }
     await player.save();
+
+    // Dispatch WhatsApp notifications to both team admins with 14-day cooling-off period
+    try {
+      await sendTransferCompletedWhatsApp({
+        currentTeamPhone: transfer.current_team_id?.phone_number,
+        newTeamPhone: transfer.new_team_id?.phone_number,
+        playerName: player.full_name,
+        nicNumber: player.nic_number,
+        playerPhone: player.phone_number,
+        currentTeamName: transfer.current_team_id?.team_name,
+        newTeamName: transfer.new_team_id?.team_name,
+        coolingDays: 14,
+        isMutualClearance: true
+      });
+    } catch (waErr) {
+      console.warn('⚠️ [WhatsApp] Failed to dispatch mutual clearance WhatsApp messages:', waErr.message);
+    }
 
     const remainingDays = getRemainingCoolingOffDays(player.eligible_to_play_date);
 

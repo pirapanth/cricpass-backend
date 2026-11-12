@@ -149,40 +149,198 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 }
 
 /**
- * Send official team admin credentials via WhatsApp
+ * Send a generic formatted message via WhatsApp
  */
-async function sendTeamCredentialsWhatsApp({ recipientPhone, teamId, teamName, password }) {
-  if (!recipientPhone) return null;
-  const cleanPhone = formatPhoneNumber(recipientPhone);
-  if (!cleanPhone) return null;
+async function sendGenericWhatsAppMessage(rawPhone, messageText) {
+  if (!rawPhone) return null;
+  const cleanPhone = formatPhoneNumber(rawPhone);
+  if (!cleanPhone || cleanPhone.length < 8) return null;
+
   const jid = `${cleanPhone}@s.whatsapp.net`;
+  console.log(`📱 [WhatsApp] Dispatching message to: ${jid}`);
 
-  const messageText =
-`🏏 *Welcome to CricPass Portal*
-━━━━━━━━━━━━━━━━━━━━━━
-Your team administrator credentials for *${teamName}*:
-
-📋 *Team ID / Username:* \`${teamId}\`
-🔑 *Password:* \`${password}\`
-📱 *WhatsApp Contact:* +${cleanPhone}
-
-🌐 *Login Portal:* https://cricpass.vercel.app
-🔒 Store these credentials safely. Thank you for supporting CricPass!
-━━━━━━━━━━━━━━━━━━━━━━`;
-
-  if (sock && isReady) {
+  if (sock) {
     try {
-      return await sock.sendMessage(jid, { text: messageText });
+      let targetJid = jid;
+      try {
+        if (typeof sock.onWhatsApp === 'function') {
+          const [result] = await sock.onWhatsApp(cleanPhone);
+          if (result && result.exists) {
+            targetJid = result.jid;
+          }
+        }
+      } catch (lookupErr) {
+        // Fall back to direct jid
+      }
+
+      const response = await sock.sendMessage(targetJid, { text: messageText });
+      console.log(`✅ [WhatsApp] Message successfully delivered to ${targetJid} (ID: ${response?.key?.id})`);
+      return { success: true, phone: cleanPhone, messageId: response?.key?.id };
     } catch (err) {
-      console.warn('⚠️ [WhatsApp] Failed to send team credentials message:', err.message);
+      console.error(`❌ [WhatsApp] Failed to deliver message to ${jid}:`, err.message);
+      return { success: false, error: err.message };
+    }
+  } else {
+    console.warn(`⚠️ [WhatsApp] Socket not connected. Simulated dispatch to +${cleanPhone}:\n${messageText}`);
+    return { success: true, simulated: true, phone: cleanPhone };
+  }
+}
+
+/**
+ * 1. Send credentials when a new team is registered
+ */
+async function sendNewTeamRegistrationWhatsApp({ recipientPhone, teamName, teamId, adminName, password }) {
+  const messageText =
+`🏏 *CricPass Team Registration*
+━━━━━━━━━━━━━━━━━━━━━━
+*Team Name:* ${teamName}
+*Team Id:* ${teamId}
+*Admin Full Name :* ${adminName || 'Team Administrator'}
+*Admin Password :* ${password}
+
+🔒 *Security Notice:* Please store your Team ID, Team Name / Username, and Password safely. Do not share your login credentials with unauthorized individuals.
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Cricket Registry & Transfer Protocol_`;
+
+  return await sendGenericWhatsAppMessage(recipientPhone, messageText);
+}
+
+/**
+ * 2.i. Send notification when team admin password is changed
+ */
+async function sendPasswordChangedWhatsApp({ recipientPhone, teamName, teamId, newPassword }) {
+  const messageText =
+`🏏 *CricPass Password Update*
+━━━━━━━━━━━━━━━━━━━━━━
+*Team Name:* ${teamName}
+*Team Id:* ${teamId}
+*New Password:* ${newPassword}
+
+🔒 *Security Notice:* Please store your Team ID, Team Name / Username, and Password safely. Do not share your login credentials with unauthorized individuals.
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Cricket Registry & Transfer Protocol_`;
+
+  return await sendGenericWhatsAppMessage(recipientPhone, messageText);
+}
+
+/**
+ * 2.ii. Send notification to the new WhatsApp number when admin WhatsApp number is updated
+ */
+async function sendWhatsAppNumberChangedWhatsApp({ recipientPhone, teamName, teamId, password }) {
+  const messageText =
+`🏏 *CricPass WhatsApp Contact Update*
+━━━━━━━━━━━━━━━━━━━━━━
+*Team Name:* ${teamName}
+*Team Id:* ${teamId}
+*Password:* ${password}
+
+🔒 *Security Notice:* Please store your Team ID, Team Name / Username, and Password safely. Do not share your login credentials with unauthorized individuals.
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Cricket Registry & Transfer Protocol_`;
+
+  return await sendGenericWhatsAppMessage(recipientPhone, messageText);
+}
+
+/**
+ * 3. Send notification to team admin when a new player is registered under their team
+ */
+async function sendPlayerRegisteredWhatsApp({ recipientPhone, playerName, nicNumber, playerPhone, teamName }) {
+  const messageText =
+`🏏 *New Player Registration*
+━━━━━━━━━━━━━━━━━━━━━━
+*Player's Full Name:* ${playerName}
+*NIC Number :* ${nicNumber}
+*Contact Phone Number:* ${playerPhone}
+━━━━━━━━━━━━━━━━━━━━━━
+_Club: ${teamName || 'Assigned Club'}_
+_CricPass Cricket Registry & Transfer Protocol_`;
+
+  return await sendGenericWhatsAppMessage(recipientPhone, messageText);
+}
+
+/**
+ * 4. Send transfer completion notifications to current releasing team and destination receiving team
+ */
+async function sendTransferCompletedWhatsApp({
+  currentTeamPhone,
+  newTeamPhone,
+  playerName,
+  nicNumber,
+  playerPhone,
+  currentTeamName,
+  newTeamName,
+  coolingDays,
+  isMutualClearance = false
+}) {
+  const coolingOffText =
+    Number(coolingDays) === 14
+      ? '14-Day (2 Weeks) cooling-off period'
+      : '30-Day (1 Month) cooling-off cooldown';
+
+  const header = isMutualClearance
+    ? '🏏 *Mutual Clearance - Transfer Update*'
+    : '🏏 *Player Transfer Completed*';
+
+  // Current releasing team admin message
+  const currentTeamMsg =
+`${header}
+━━━━━━━━━━━━━━━━━━━━━━
+*Player's Full Name:* ${playerName}
+*NIC Number :* ${nicNumber}
+*Contact Phone Number:* ${playerPhone}
+
+The Player sucessfully Transfer the ${newTeamName || 'Destination Team'} ....! , The Player Will can play after ${coolingOffText}
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Official Transfer Protocol_`;
+
+  // Destination receiving team admin message
+  const newTeamMsg =
+`${header}
+━━━━━━━━━━━━━━━━━━━━━━
+*Player's Full Name:* ${playerName}
+*NIC Number :* ${nicNumber}
+*Contact Phone Number:* ${playerPhone}
+
+The Player sucessfully Transfer from ${currentTeamName || 'Previous Team'} ....! , The Player Will can play after ${coolingOffText}
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Official Transfer Protocol_`;
+
+  const results = {};
+  if (currentTeamPhone) {
+    try {
+      results.currentTeam = await sendGenericWhatsAppMessage(currentTeamPhone, currentTeamMsg);
+    } catch (err) {
+      console.warn('⚠️ [WhatsApp] Failed to notify current team admin:', err.message);
     }
   }
-  return null;
+
+  if (newTeamPhone) {
+    try {
+      results.newTeam = await sendGenericWhatsAppMessage(newTeamPhone, newTeamMsg);
+    } catch (err) {
+      console.warn('⚠️ [WhatsApp] Failed to notify receiving team admin:', err.message);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Backwards-compatible alias for team credentials
+ */
+async function sendTeamCredentialsWhatsApp({ recipientPhone, teamId, teamName, adminName, password }) {
+  return await sendNewTeamRegistrationWhatsApp({ recipientPhone, teamId, teamName, adminName, password });
 }
 
 module.exports = {
   initializeWhatsAppClient,
   sendWhatsAppOTP,
+  sendGenericWhatsAppMessage,
+  sendNewTeamRegistrationWhatsApp,
+  sendPasswordChangedWhatsApp,
+  sendWhatsAppNumberChangedWhatsApp,
+  sendPlayerRegisteredWhatsApp,
+  sendTransferCompletedWhatsApp,
   sendTeamCredentialsWhatsApp,
   formatPhoneNumber,
   formatDisplayPhone,

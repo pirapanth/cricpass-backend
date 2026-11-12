@@ -4,7 +4,14 @@ const Player = require('../models/Player');
 const PhoneUpdateSession = require('../models/PhoneUpdateSession');
 const { generateOTP, sendSimulatedSMS } = require('../utils/otpGenerator');
 const { sendTeamCredentialsEmail } = require('../services/emailService');
-const { sendTeamCredentialsWhatsApp, formatDisplayPhone, formatPhoneNumber } = require('../services/whatsappService');
+const {
+  sendNewTeamRegistrationWhatsApp,
+  sendPasswordChangedWhatsApp,
+  sendWhatsAppNumberChangedWhatsApp,
+  sendTeamCredentialsWhatsApp,
+  formatDisplayPhone,
+  formatPhoneNumber
+} = require('../services/whatsappService');
 
 /**
  * Helper to build normalized phone variants so teams stored as 077..., 9477..., or +9477... all match.
@@ -176,7 +183,7 @@ async function registerTeam(req, res, next) {
     if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
       return res.status(400).json({
         success: false,
-        message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94771454651)'
+        message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94770000000)'
       });
     }
 
@@ -217,10 +224,11 @@ async function registerTeam(req, res, next) {
 
     // Send official registration credentials via WhatsApp
     try {
-      await sendTeamCredentialsWhatsApp({
+      await sendNewTeamRegistrationWhatsApp({
         recipientPhone: formattedPhone,
         teamId: finalTeamId,
         teamName: team.team_name,
+        adminName: team.admin_name,
         password: rawPassword
       });
     } catch (waErr) {
@@ -472,6 +480,17 @@ async function updateTeamPhone(req, res, next) {
         `[CricPass] Phone number updated successfully for team ${team.team_name} from ${previousPhone} to ${team.phone_number}.`
       );
 
+      try {
+        await sendWhatsAppNumberChangedWhatsApp({
+          recipientPhone: team.phone_number,
+          teamId: team.team_id,
+          teamName: team.team_name,
+          password: 'Saved Account Password (Unchanged)'
+        });
+      } catch (waErr) {
+        console.warn('⚠️ Could not dispatch WhatsApp number change message:', waErr.message);
+      }
+
       return res.status(200).json({
         success: true,
         step: 'COMPLETED',
@@ -621,6 +640,18 @@ async function changeTeamPassword(req, res, next) {
     team.password = String(new_password).trim();
     await team.save();
 
+    // Send WhatsApp notification for password change
+    try {
+      await sendPasswordChangedWhatsApp({
+        recipientPhone: team.phone_number,
+        teamName: team.team_name,
+        teamId: team.team_id,
+        newPassword: String(new_password).trim()
+      });
+    } catch (waErr) {
+      console.warn('⚠️ Could not dispatch password change WhatsApp notification:', waErr.message);
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Admin password updated successfully in database!',
@@ -674,7 +705,7 @@ async function changeTeamEmail(req, res, next) {
       if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
         return res.status(400).json({
           success: false,
-          message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94771454651)'
+          message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94770000000)'
         });
       }
       team.phone_number = formattedPhone;
@@ -706,7 +737,7 @@ async function changeTeamEmail(req, res, next) {
       }
     } else {
       try {
-        await sendTeamCredentialsWhatsApp({
+        await sendWhatsAppNumberChangedWhatsApp({
           recipientPhone: team.phone_number,
           teamId: team.team_id,
           teamName: team.team_name,

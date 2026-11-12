@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const Team = require('../models/Team');
 const { getRemainingCoolingOffDays, isPlayerEligibleToPlay } = require('../utils/coolingOffCalculator');
-const { formatDisplayPhone } = require('../services/whatsappService');
+const { formatDisplayPhone, sendPlayerRegisteredWhatsApp } = require('../services/whatsappService');
 
 /**
  * @desc    Search player by NIC number
@@ -178,6 +178,21 @@ async function registerPlayer(req, res, next) {
       'current_team_id',
       'team_id team_name admin_name admin_email phone_number image_url'
     );
+
+    // Dispatch WhatsApp notification to assigned club admin
+    if (populatedPlayer?.current_team_id?.phone_number) {
+      try {
+        await sendPlayerRegisteredWhatsApp({
+          recipientPhone: populatedPlayer.current_team_id.phone_number,
+          playerName: populatedPlayer.full_name,
+          nicNumber: populatedPlayer.nic_number,
+          playerPhone: populatedPlayer.phone_number,
+          teamName: populatedPlayer.current_team_id.team_name
+        });
+      } catch (waErr) {
+        console.warn('⚠️ [WhatsApp] Could not dispatch player registration WhatsApp:', waErr.message);
+      }
+    }
 
     return res.status(201).json({
       success: true,
