@@ -190,7 +190,7 @@ async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, pass
  */
 async function sendContactUsEmail({ userEmail, subject, issueDescription, attachment }) {
   // Always route directly to v70524817@gmail.com
-  const contactAdminEmail = 'v70524817@gmail.com';
+  const contactAdminEmail = 'cricpassadmin@gmail.com';
   const hasUserEmail = Boolean(userEmail && userEmail.trim());
 
   const htmlContent = `
