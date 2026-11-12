@@ -1,85 +1,46 @@
 const nodemailer = require('nodemailer');
-const { Resend } = require('resend');
 const { sendWhatsAppOTP } = require('./whatsappService');
 
 /**
- * Dispatch an email via Nodemailer (Gmail SMTP) if GMAIL_USER & GMAIL_APP_PASS are set,
- * or fall back to Resend when RESEND_API_KEY is configured.
+ * Dispatch an email via Gmail SMTP (Nodemailer) strictly using GMAIL_USER & GMAIL_APP_PASS
  */
 async function dispatchEmail({ to, replyTo, subject, text, html, attachments = [], fromLabel = 'CricPass Support' }) {
   const gmailUser = process.env.GMAIL_USER?.trim();
   const gmailPass = process.env.GMAIL_APP_PASS?.trim();
-  const resendKey = process.env.RESEND_API_KEY?.trim();
 
-  if (gmailUser && gmailPass) {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: gmailUser,
-        pass: gmailPass
-      }
-    });
-
-    const info = await transporter.sendMail({
-      from: `"${fromLabel}" <${gmailUser}>`,
-      to: Array.isArray(to) ? to.join(', ') : to,
-      ...(replyTo ? { replyTo } : {}),
-      subject,
-      text,
-      html,
-      ...(attachments.length > 0 ? { attachments } : {})
-    });
-
-    return { provider: 'nodemailer', id: info.messageId };
+  if (!gmailUser || !gmailPass) {
+    throw new Error('GMAIL_USER and GMAIL_APP_PASS are required in environment variables.');
   }
 
-  if (resendKey) {
-    const resend = new Resend(resendKey);
-    const senderEmail = process.env.FROM_EMAIL || `${fromLabel} <onboarding@resend.dev>`;
-    const resendAttachments = attachments.map((att) => ({
-      filename: att.filename,
-      content: Buffer.isBuffer(att.content)
-        ? att.content
-        : Buffer.from(String(att.content || ''), att.encoding || 'base64'),
-      ...(att.contentType ? { contentType: att.contentType } : {})
-    }));
-
-    const response = await resend.emails.send({
-      from: senderEmail,
-      to: Array.isArray(to) ? to : [to],
-      ...(replyTo ? { replyTo } : {}),
-      subject,
-      text,
-      html,
-      ...(resendAttachments.length > 0 ? { attachments: resendAttachments } : {})
-    });
-
-    if (response.error) {
-      throw new Error(response.error.message);
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: gmailUser,
+      pass: gmailPass
     }
+  });
 
-    return { provider: 'resend', id: response.data?.id };
-  }
+  const info = await transporter.sendMail({
+    from: `"${fromLabel}" <${gmailUser}>`,
+    to: Array.isArray(to) ? to.join(', ') : to,
+    ...(replyTo ? { replyTo } : {}),
+    subject,
+    text,
+    html,
+    ...(attachments.length > 0 ? { attachments } : {})
+  });
 
-  throw new Error(
-    'Email service is not configured. Set GMAIL_USER & GMAIL_APP_PASS (or RESEND_API_KEY) in backend environment variables.'
-  );
+  return { provider: 'nodemailer', id: info.messageId };
 }
 
 /**
  * Send a styled 6-digit verification code to recipient email
- *
- * @param {string} recipientEmail Target email address
- * @param {string} otpCode 6-digit numeric OTP
- * @param {string} [purpose='Verification'] Purpose of OTP
- * @returns {Promise<Object>}
  */
 async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
   if (!recipientEmail) {
     throw new Error('Recipient contact is required');
   }
 
-  // If recipient is a phone number, forward to WhatsApp OTP
   if (!String(recipientEmail).includes('@')) {
     return await sendWhatsAppOTP(recipientEmail, otpCode, purpose);
   }
@@ -137,7 +98,6 @@ async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
     fromLabel: 'CricPass Verification'
   });
 
-  console.log(`✉️ Email OTP sent via ${result.provider} to ${recipientEmail} (ID: ${result.id})`);
   return result;
 }
 
@@ -226,15 +186,15 @@ async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, pass
     fromLabel: 'CricPass Portal'
   });
 
-  console.log(`✉️ Team credentials email sent via ${result.provider} to ${recipientEmail} (ID: ${result.id})`);
   return result;
 }
 
 /**
- * Send Contact Us / Issue Report email to cricpassadmin@gmail.com
+ * Send Contact Us / Issue Report email strictly to v70524817@gmail.com
  */
 async function sendContactUsEmail({ userEmail, subject, issueDescription, attachment }) {
-  const contactAdminEmail = process.env.CONTACT_RECEIVER_EMAIL || 'cricpassadmin@gmail.com';
+  // Always route directly to v70524817@gmail.com
+  const contactAdminEmail = 'v70524817@gmail.com';
   const hasUserEmail = Boolean(userEmail && userEmail.trim());
 
   const htmlContent = `
@@ -306,7 +266,6 @@ async function sendContactUsEmail({ userEmail, subject, issueDescription, attach
     fromLabel: 'CricPass Support Desk'
   });
 
-  console.log(`✉️ Support issue forwarded via ${result.provider} to ${contactAdminEmail} (ID: ${result.id})`);
   return result;
 }
 
