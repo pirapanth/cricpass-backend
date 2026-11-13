@@ -1,10 +1,11 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
-const Verification = require('../models/Verification'); // Adjust path if your models folder is elsewhere
+const Verification = require('../models/Verification');
 const fs = require('fs');
 const path = require('path');
+
 let sock = null;
 let isReady = false;
 
@@ -64,13 +65,22 @@ async function initializeWhatsAppClient() {
   try {
     console.log('📱 [WhatsApp] Initializing Baileys with local multi-file auth state...');
     
-    // Uses local directory for session storage to ensure clean cryptographic handshakes
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
+    let version;
+    try {
+      const fetched = await fetchLatestBaileysVersion();
+      version = fetched.version;
+    } catch {
+      version = [2, 3000, 1015901307];
+    }
 
     sock = makeWASocket({
+      version,
       auth: state,
+      browser: Browsers.ubuntu('Chrome'),
       printQRInTerminal: false,
-      logger: pino({ level: 'silent' })
+      logger: pino({ level: 'silent' }),
+      syncFullHistory: false
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -101,7 +111,6 @@ async function initializeWhatsAppClient() {
         
         console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}).`);
 
-        // Only clear files if explicitly logged out or unauthorized (401)
         if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
           console.log('🔄 [WhatsApp] Clearing stale session files...');
           try {
@@ -112,17 +121,15 @@ async function initializeWhatsAppClient() {
           } catch (err) {
             console.warn('⚠️ [WhatsApp] Could not clear auth folder:', err.message);
           }
-          // Reconnect quickly to get a fresh QR code
           setTimeout(() => initializeWhatsAppClient(), 3000);
         } else {
-          // For network drops or standard closures, reconnect without wiping folder
           console.log('🔄 [WhatsApp] Reconnecting in 5 seconds...');
           setTimeout(() => initializeWhatsAppClient(), 5000);
         }
       }
     });
 
-    // Listen for incoming "VERIFY-XXXX" messages from Team Admins (Reads from MongoDB)
+    // Listen for incoming messages (e.g. manual VERIFY-XXXX prompts if needed)
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
@@ -159,10 +166,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 
             await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
             console.log(`✅ [WhatsApp] Replied with OTP to ${senderJid} for token ${incomingCode}`);
-          } else {
-            await sock.sendMessage(senderJid, {
-              text: '⚠️ This verification code is invalid or has expired. Please request a new one on the CricPass website.'
-            }, { quoted: msg });
           }
         } catch (dbErr) {
           console.error('❌ [WhatsApp] Error looking up verification token:', dbErr.message);
@@ -177,7 +180,7 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 }
 
 /**
- * Step 1: Start Team Admin Verification (Saves session to MongoDB + Google Contacts + Email Fallback)
+ * Step 1: Start Team Admin Verification (Sends Outbound WhatsApp OTP or falls back to Email)
  */
 async function startTeamAdminVerification({ adminName, teamName, phone, email, purpose = 'Team Registration' }) {
   const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -203,16 +206,22 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     expiresAt
   });
 
-  // 3. If Baileys WhatsApp is connected or no webhookUrl configured, return token for user-initiated wa.me chat
-  if ((isReady && sock) || !webhookUrl) {
-    return {
-      success: true,
-      method: 'whatsapp',
-      verifyToken
-    };
+  // 3. If WhatsApp is ready, send the 6-digit OTP directly to the user's phone via WhatsApp outbound message!
+  if (isReady && sock && phone) {
+    try {
+      await sendWhatsAppOTP(phone, otpCode, purpose);
+      console.log(`📱 [WhatsApp] Successfully sent OTP directly to ${phone}`);
+      return {
+        success: true,
+        method: 'whatsapp',
+        verifyToken
+      };
+    } catch (waErr) {
+      console.warn('⚠️ [WhatsApp] Direct outbound OTP failed, trying email fallback:', waErr.message);
+    }
   }
 
-  // 4. Automatic Email Fallback if Baileys is reconnecting and webhookUrl is configured
+  // 4. Automatic Email Fallback if WhatsApp is disconnected or outbound failed
   if (email && webhookUrl) {
     try {
       await fetch(webhookUrl, {
@@ -231,8 +240,9 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
           `
         })
       });
+      console.log(`📧 [Email Fallback] Sent OTP to ${email}`);
     } catch (mailErr) {
-      console.warn('⚠️ [WhatsApp] Webhook email failed, continuing with fallback token:', mailErr.message);
+      console.warn('⚠️ [Email Fallback] Webhook email failed:', mailErr.message);
     }
 
     return {
@@ -244,7 +254,7 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
 
   return {
     success: true,
-    method: 'whatsapp',
+    method: 'whatsapp-token',
     verifyToken
   };
 }
@@ -276,7 +286,7 @@ Your 6-Digit One-Time Password (OTP) is:
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Cricket Registry & Transfer Protocol_`;
 
-  if (sock) {
+  if (sock && isReady) {
     try {
       let targetJid = jid;
       try {
@@ -290,7 +300,7 @@ _CricPass Cricket Registry & Transfer Protocol_`;
       throw new Error(`WhatsApp delivery failed: ${err.message}`);
     }
   } else {
-    return { success: true, simulated: true, phone: cleanPhone, otpCode };
+    throw new Error('WhatsApp client is not connected or ready.');
   }
 }
 
@@ -304,7 +314,7 @@ async function sendGenericWhatsAppMessage(rawPhone, messageText) {
 
   const jid = `${cleanPhone}@s.whatsapp.net`;
 
-  if (sock) {
+  if (sock && isReady) {
     try {
       let targetJid = jid;
       try {
@@ -320,13 +330,10 @@ async function sendGenericWhatsAppMessage(rawPhone, messageText) {
       return { success: false, error: err.message };
     }
   } else {
-    return { success: true, simulated: true, phone: cleanPhone };
+    return { success: false, error: 'WhatsApp not connected' };
   }
 }
 
-/**
- * 1. Send credentials when a new team is registered (Called in Step 3 AFTER password is set)
- */
 async function sendNewTeamRegistrationWhatsApp({ recipientPhone, teamName, teamId, adminName, password }) {
   const messageText =
 `🏏 *CricPass Team Registration*
@@ -343,9 +350,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
   return await sendGenericWhatsAppMessage(recipientPhone, messageText);
 }
 
-/**
- * 2.i. Send notification when team admin password is changed
- */
 async function sendPasswordChangedWhatsApp({ recipientPhone, teamName, teamId, newPassword }) {
   const messageText =
 `🏏 *CricPass Password Update*
@@ -361,9 +365,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
   return await sendGenericWhatsAppMessage(recipientPhone, messageText);
 }
 
-/**
- * 2.ii. Send notification to the new WhatsApp number when admin WhatsApp number is updated
- */
 async function sendWhatsAppNumberChangedWhatsApp({ recipientPhone, teamName, teamId, password }) {
   const messageText =
 `🏏 *CricPass WhatsApp Contact Update*
@@ -379,9 +380,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
   return await sendGenericWhatsAppMessage(recipientPhone, messageText);
 }
 
-/**
- * 3. Send notification to team admin when a new player is registered under their team
- */
 async function sendPlayerRegisteredWhatsApp({ recipientPhone, playerName, nicNumber, playerPhone, teamName }) {
   const messageText =
 `🏏 *New Player Registration*
@@ -396,9 +394,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
   return await sendGenericWhatsAppMessage(recipientPhone, messageText);
 }
 
-/**
- * 4. Send transfer completion notifications to current releasing team and destination receiving team
- */
 async function sendTransferCompletedWhatsApp({
   currentTeamPhone,
   newTeamPhone,
@@ -426,7 +421,7 @@ async function sendTransferCompletedWhatsApp({
 *NIC Number :* ${nicNumber}
 *Contact Phone Number:* ${playerPhone}
 
-The Player sucessfully Transfer the ${newTeamName || 'Destination Team'} ....! , The Player Will can play after ${coolingOffText}
+The Player successfully transferred to ${newTeamName || 'Destination Team'}! The player will be able to play after ${coolingOffText}.
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Official Transfer Protocol_`;
 
@@ -437,7 +432,7 @@ _CricPass Official Transfer Protocol_`;
 *NIC Number :* ${nicNumber}
 *Contact Phone Number:* ${playerPhone}
 
-The Player sucessfully Transfer from ${currentTeamName || 'Previous Team'} ....! , The Player Will can play after ${coolingOffText}
+The Player successfully transferred from ${currentTeamName || 'Previous Team'}! The player will be able to play after ${coolingOffText}.
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Official Transfer Protocol_`;
 
