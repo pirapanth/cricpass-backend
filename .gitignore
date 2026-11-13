@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# WhatsApp Baileys Local Session Auth State (Prevents QR code resets)
+auth_info_baileys/
+
+# Logs & OS files
+logs/
+*.log
+npm-debug.log*
+.DS_Store

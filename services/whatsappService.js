@@ -65,7 +65,10 @@ async function initializeWhatsAppClient() {
   try {
     console.log('📱 [WhatsApp] Initializing Baileys with local multi-file auth state...');
     
-    const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
+    // Auth state directory
+    const authDir = path.join(__dirname, '../auth_info_baileys');
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    
     let version;
     try {
       const fetched = await fetchLatestBaileysVersion();
@@ -112,11 +115,10 @@ async function initializeWhatsAppClient() {
         console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}).`);
 
         if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-          console.log('🔄 [WhatsApp] Clearing stale session files...');
+          console.log('🔄 [WhatsApp] Session logged out or 401 received. Clearing stale session files...');
           try {
-            const authPath = path.join(__dirname, '../auth_info_baileys');
-            if (fs.existsSync(authPath)) {
-              fs.rmSync(authPath, { recursive: true, force: true });
+            if (fs.existsSync(authDir)) {
+              fs.rmSync(authDir, { recursive: true, force: true });
             }
           } catch (err) {
             console.warn('⚠️ [WhatsApp] Could not clear auth folder:', err.message);
@@ -141,7 +143,6 @@ async function initializeWhatsAppClient() {
           continue;
         }
 
-        // Extract text across all Baileys message structures (including ephemeral/viewOnce)
         const unwrap =
           msg.message.ephemeralMessage?.message ||
           msg.message.viewOnceMessage?.message ||
@@ -160,13 +161,10 @@ async function initializeWhatsAppClient() {
         if (!tokenMatch) continue;
         const incomingCode = tokenMatch[0];
 
-        // Extract clean sender phone number for logging and cross-device correlation
-        // Format: 94728989748@s.whatsapp.net or 94728989748:1@s.whatsapp.net
         const cleanSenderNumber = senderJid.split('@')[0].split(':')[0].replace(/\D/g, '');
         console.log(`📩 [WhatsApp Inbound] Received code "${incomingCode}" from sender: ${cleanSenderNumber} (${senderJid})`);
 
         try {
-          // Look up active verification session in MongoDB by verifyToken
           const record = await Verification.findOne({ verifyToken: incomingCode });
 
           if (!record) {
@@ -178,32 +176,18 @@ async function initializeWhatsAppClient() {
           }
 
           if (new Date() >= record.expiresAt) {
-            console.warn(`⚠️ [WhatsApp Inbound] Token "${incomingCode}" has expired (expired at ${record.expiresAt})`);
+            console.warn(`⚠️ [WhatsApp Inbound] Token "${incomingCode}" has expired`);
             await sock.sendMessage(senderJid, {
               text: `⚠️ *CricPass Verification Notice*\n━━━━━━━━━━━━━━━━━━━━━━\nThe verification code *${incomingCode}* has expired.\n\nPlease request a fresh verification code on the CricPass website.`
             }, { quoted: msg });
             continue;
           }
 
-          // Cross-device / Phone Number correlation:
-          // The admin may be registering from a computer and sending from personal WhatsApp (e.g. 0728989748)
-          const recordDigits = (record.phone || '').replace(/\D/g, '');
-          const phoneMatches =
-            recordDigits &&
-            (cleanSenderNumber.endsWith(recordDigits.slice(-9)) ||
-             recordDigits.endsWith(cleanSenderNumber.slice(-9)));
-
-          if (phoneMatches) {
-            console.log(`📱 [WhatsApp Inbound] Phone matched registered number (${record.phone}) for token ${incomingCode}`);
-          } else {
-            console.log(`📱 [WhatsApp Inbound] Cross-device token match: Sender ${cleanSenderNumber}, Registered ${record.phone || 'N/A'}`);
-          }
-
           const replyText =
 `🏏 *CricPass Official Verification*
 ━━━━━━━━━━━━━━━━━━━━━━
 An authorization request was initiated for:
-*${record.purpose || 'Team Registration'}* (${record.teamName})
+- *${record.purpose || 'Team Registration'}* (${record.teamName})
 
 Your 6-Digit One-Time Password (OTP) is:
 👉 *${record.otp}*
@@ -229,22 +213,16 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 
 /**
  * Step 1: Start Team Admin Verification (Saves token & OTP to MongoDB Verification collection)
- * STRICT OUTBOUND RULE:
- * The backend does NOT send any automatic outbound WhatsApp messages.
- * The verification is strictly user-initiated: user clicks "Send Verify Code via WhatsApp"
- * to send the VERIFY-XXXX code to the bot, and the bot replies with the 6-digit OTP.
  */
 async function startTeamAdminVerification({ adminName, teamName, phone, email, purpose = 'Team Registration' }) {
   const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
   const verifyToken = `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`;
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // Valid 10 minutes
 
-  // 1. Save Team Admin number into Google Contacts in the background if configured
   if (phone) {
     saveContactToGoogle({ adminName, teamName, phone });
   }
 
-  // 2. Store verification session in MongoDB
   await Verification.create({
     verifyToken,
     otp: otpCode,
@@ -259,7 +237,6 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
 
   console.log(`🔐 [Verification] Created session for "${teamName}" (${phone || 'No phone'}). Token: ${verifyToken}, OTP: ${otpCode}. Awaiting user-initiated inbound message.`);
 
-  // 3. Return verification token for user-initiated wa.me message to bot
   return {
     success: true,
     method: 'whatsapp',
@@ -267,9 +244,6 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
   };
 }
 
-/**
- * Send 6-digit WhatsApp OTP verification message (Direct Outbound)
- */
 async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
   if (!phoneNumber) throw new Error('Recipient phone number is required');
 
@@ -279,7 +253,6 @@ async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
   }
 
   const jid = `${cleanPhone}@s.whatsapp.net`;
-
   const messageText =
 `🏏 *CricPass Official Verification*
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -312,9 +285,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
   }
 }
 
-/**
- * Send a generic formatted message via WhatsApp
- */
 async function sendGenericWhatsAppMessage(rawPhone, messageText) {
   if (!rawPhone) return null;
   const cleanPhone = formatPhoneNumber(rawPhone);
