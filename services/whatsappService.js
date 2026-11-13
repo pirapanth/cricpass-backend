@@ -2,10 +2,13 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
-const mongoose = require('mongoose');
 
 let sock = null;
 let isReady = false;
+
+// Stores pending user-initiated verifications:
+// { "VERIFY-4829": { otp: "654321", teamName: "USSC", purpose: "Team Registration", expiresAt: 1731490000000 } }
+const pendingVerifications = new Map();
 
 /**
  * Format phone number into international digit string (e.g., Sri Lanka +94)
@@ -32,17 +35,41 @@ function formatDisplayPhone(rawPhone, defaultCountryCode = '94') {
 }
 
 /**
+ * Silently save Team Admin into Google Contacts via Apps Script (v70524817@gmail.com)
+ */
+async function saveContactToGoogle({ adminName, teamName, phone }) {
+  const webhookUrl = process.env.GMAIL_WEBHOOK_URL?.trim();
+  const displayPhone = formatDisplayPhone(phone);
+  if (!webhookUrl || !displayPhone) return;
+
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'saveContact',
+        name: `${adminName || 'Team Admin'} - ${teamName || 'CricPass'}`,
+        teamName: teamName || 'CricPass Club',
+        phone: displayPhone
+      })
+    });
+    console.log(`📇 [Contacts] Saved ${displayPhone} to Google Contacts`);
+  } catch (err) {
+    console.warn('⚠️ [Contacts] Failed to sync Google Contact:', err.message);
+  }
+}
+
+/**
  * Initialize Baileys WhatsApp Connection (No Chrome/Puppeteer required)
  */
 async function initializeWhatsAppClient() {
   try {
     console.log('📱 [WhatsApp] Initializing Baileys pure-socket client...');
-    
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
     sock = makeWASocket({
       auth: state,
-      printQRInTerminal: false, // Handled manually below for crisp rendering
+      printQRInTerminal: false,
       logger: pino({ level: 'silent' })
     });
 
@@ -53,11 +80,8 @@ async function initializeWhatsAppClient() {
         console.log('\n=============================================================');
         console.log('📲 CRICPASS WHATSAPP AUTHENTICATION QR CODE');
         console.log('=============================================================\n');
-        
-        // 1. Render terminal ASCII QR backup
         qrcodeTerminal.generate(qr, { small: true });
 
-        // 2. Generate browser-scannable Data URL
         try {
           const qrImageUrl = await QRCode.toDataURL(qr);
           console.log('\n🔗 COPY THIS URL & PASTE IN YOUR BROWSER FOR A CRISP QR CODE:');
@@ -70,7 +94,7 @@ async function initializeWhatsAppClient() {
 
       if (connection === 'open') {
         isReady = true;
-        console.log('🚀 [WhatsApp] Baileys client is connected and READY to send OTP messages!');
+        console.log('🚀 [WhatsApp] Baileys client is connected and READY!');
       } else if (connection === 'close') {
         isReady = false;
         const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -81,18 +105,117 @@ async function initializeWhatsAppClient() {
       }
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    // Listen for incoming "VERIFY-XXXX" messages from Team Admins (Zero Ban Risk)
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
 
+      for (const msg of messages) {
+        if (!msg.message || msg.key.fromMe) continue;
+
+        const senderJid = msg.key.remoteJid; // Works for both @s.whatsapp.net and @lid
+        const text =
+          msg.message.conversation ||
+          msg.message.extendedTextMessage?.text ||
+          '';
+
+        const incomingCode = text.trim().toUpperCase();
+        const record = pendingVerifications.get(incomingCode);
+
+        if (record && Date.now() < record.expiresAt) {
+          const replyText =
+`🏏 *CricPass Official Verification*
+━━━━━━━━━━━━━━━━━━━━━━
+An authorization request was initiated for:
+*${record.purpose}* (${record.teamName})
+
+Your 6-Digit One-Time Password (OTP) is:
+👉 *${record.otp}*
+
+⏰ This code is valid for *5 minutes*.
+🔒 For your security, do not share this code with anyone.
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Cricket Registry & Transfer Protocol_`;
+
+          await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
+          console.log(`✅ [WhatsApp] Replied with OTP to ${senderJid} for token ${incomingCode}`);
+          pendingVerifications.delete(incomingCode);
+        }
+      }
+    });
+
+    sock.ev.on('creds.update', saveCreds);
   } catch (error) {
     console.error('❌ [WhatsApp] Baileys initialization error:', error.message);
   }
 }
 
 /**
- * Send 6-digit WhatsApp OTP verification message
+ * Smart Hybrid Verification (WhatsApp First-Message + Google Contact Save + Email Fallback)
  */
+async function startTeamAdminVerification({ adminName, teamName, phone, email, purpose = 'Team Verification' }) {
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const webhookUrl = process.env.GMAIL_WEBHOOK_URL?.trim();
+
+  // Purge expired verification tokens from memory
+  const now = Date.now();
+  for (const [key, val] of pendingVerifications.entries()) {
+    if (now >= val.expiresAt) pendingVerifications.delete(key);
+  }
+
+  // 1. Save Team Admin number into Google Contacts in the background
+  if (phone) {
+    saveContactToGoogle({ adminName, teamName, phone });
+  }
+
+  // 2. If Baileys WhatsApp is connected, return token for user-initiated wa.me chat
+  if (isReady && sock) {
+    const verifyToken = `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`;
+    pendingVerifications.set(verifyToken, {
+      otp: otpCode,
+      teamName: teamName || 'CricPass Club',
+      purpose,
+      expiresAt: now + 10 * 60 * 1000 // Valid 10 minutes
+    });
+
+    return {
+      success: true,
+      method: 'whatsapp',
+      verifyToken,
+      otpCode
+    };
+  }
+
+  // 3. Automatic Email Fallback if Render just woke up from sleep and Baileys is reconnecting
+  if (webhookUrl && email) {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: email,
+        subject: `CricPass Verification OTP - ${teamName || 'Team Admin'}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 16px;">
+            <h2>🏏 CricPass Official Verification</h2>
+            <p>Your 6-digit verification code for <b>${teamName || 'your team'}</b> (${purpose}) is:</p>
+            <h1 style="letter-spacing: 4px; color: #16a34a;">${otpCode}</h1>
+            <p>This code is valid for 5 minutes.</p>
+          </div>
+        `
+      })
+    });
+
+    return {
+      success: true,
+      method: 'email',
+      otpCode
+    };
+  }
+
+  throw new Error('WhatsApp is reconnecting and no fallback email was provided.');
+}
+
 /**
- * Send 6-digit WhatsApp OTP verification message
+ * Send 6-digit WhatsApp OTP verification message (Direct Outbound)
  */
 async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
   if (!phoneNumber) {
@@ -106,7 +229,7 @@ async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
 
   const jid = `${cleanPhone}@s.whatsapp.net`;
 
-  const messageText = 
+  const messageText =
 `🏏 *CricPass Official Verification*
 ━━━━━━━━━━━━━━━━━━━━━━
 An authorization request was initiated for:
@@ -124,7 +247,6 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 
   if (sock) {
     try {
-      // Optional number lookup to guarantee Baileys routes to the exact correct JID format
       let targetJid = jid;
       try {
         const [result] = await sock.onWhatsApp(cleanPhone);
@@ -281,7 +403,6 @@ async function sendTransferCompletedWhatsApp({
     ? '🏏 *Mutual Clearance - Transfer Update*'
     : '🏏 *Player Transfer Completed*';
 
-  // Current releasing team admin message
   const currentTeamMsg =
 `${header}
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -293,7 +414,6 @@ The Player sucessfully Transfer the ${newTeamName || 'Destination Team'} ....! ,
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Official Transfer Protocol_`;
 
-  // Destination receiving team admin message
   const newTeamMsg =
 `${header}
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -334,6 +454,8 @@ async function sendTeamCredentialsWhatsApp({ recipientPhone, teamId, teamName, a
 
 module.exports = {
   initializeWhatsAppClient,
+  startTeamAdminVerification,
+  saveContactToGoogle,
   sendWhatsAppOTP,
   sendGenericWhatsAppMessage,
   sendNewTeamRegistrationWhatsApp,

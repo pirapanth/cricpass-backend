@@ -10,7 +10,8 @@ const {
   sendWhatsAppNumberChangedWhatsApp,
   sendTeamCredentialsWhatsApp,
   formatDisplayPhone,
-  formatPhoneNumber
+  formatPhoneNumber,
+  isWhatsAppReady
 } = require('../services/whatsappService');
 
 /**
@@ -160,23 +161,32 @@ async function registerTeam(req, res, next) {
   try {
     const {
       team_id,
-      team_name,
-      admin_name,
-      admin_email,
-      phone_number,
+      team_name: rawTeamName,
+      teamName,
+      admin_name: rawAdminName,
+      adminName,
+      admin_email: rawAdminEmail,
+      email,
+      phone_number: rawPhone,
+      phone,
       password,
       image_url
     } = req.body;
 
+    const team_name = teamName || rawTeamName;
+    const admin_name = adminName || rawAdminName;
+    const phone_number = phone || rawPhone;
+    const admin_email = email || rawAdminEmail;
+
     // Validate required fields
     if (!team_name || !team_name.trim()) {
-      return res.status(400).json({ success: false, message: 'team_name is required' });
+      return res.status(400).json({ success: false, message: 'team_name / teamName is required' });
     }
     if (!admin_name || !admin_name.trim()) {
-      return res.status(400).json({ success: false, message: 'admin_name is required' });
+      return res.status(400).json({ success: false, message: 'admin_name / adminName is required' });
     }
     if (!phone_number || !phone_number.trim()) {
-      return res.status(400).json({ success: false, message: 'WhatsApp phone_number is required' });
+      return res.status(400).json({ success: false, message: 'WhatsApp phone / phone_number is required' });
     }
 
     const formattedPhone = formatDisplayPhone(phone_number.trim());
@@ -252,10 +262,18 @@ async function registerTeam(req, res, next) {
     const teamObj = team.toObject();
     delete teamObj.password;
 
+    const isWaReady = typeof isWhatsAppReady === 'function' ? isWhatsAppReady() : false;
+    const method = isWaReady ? 'whatsapp' : 'email';
+    const verifyToken = isWaReady
+      ? `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`
+      : undefined;
+
     return res.status(201).json({
       success: true,
-      message: `Team "${team.team_name}" registered successfully with unique ID: ${finalTeamId}. Official credentials dispatched to WhatsApp (${formattedPhone}).`,
-      data: teamObj
+      message: `Team "${team.team_name}" registered successfully with unique ID: ${finalTeamId}.`,
+      data: teamObj,
+      method,
+      verifyToken
     });
   } catch (error) {
     next(error);
