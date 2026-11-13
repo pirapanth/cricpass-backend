@@ -1,9 +1,8 @@
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
-const { useMongoAuthState } = require('../utils/mongoAuthState'); // 👈 Use MongoDB auth helper
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
-const Verification = require('../models/Verification');
+const Verification = require('../models/Verification'); // Adjust path if your models folder is elsewhere
 
 let sock = null;
 let isReady = false;
@@ -58,14 +57,14 @@ async function saveContactToGoogle({ adminName, teamName, phone }) {
 }
 
 /**
- * Initialize Baileys WhatsApp Connection with MongoDB Auth State
+ * Initialize Baileys WhatsApp Connection with Local Multi-File Auth State
  */
 async function initializeWhatsAppClient() {
   try {
-    console.log('📱 [WhatsApp] Initializing Baileys with MongoDB Auth State...');
+    console.log('📱 [WhatsApp] Initializing Baileys with local multi-file auth state...');
     
-    // 👈 Stores session credentials in MongoDB Atlas so they survive Render sleep/restarts
-    const { state, saveCreds } = await useMongoAuthState('cricpass_main');
+    // Uses local directory for session storage to ensure clean cryptographic handshakes
+    const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
     sock = makeWASocket({
       auth: state,
@@ -97,10 +96,13 @@ async function initializeWhatsAppClient() {
         console.log('🚀 [WhatsApp] Baileys client is connected and READY!');
       } else if (connection === 'close') {
         isReady = false;
-        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-        console.warn('⚠️ [WhatsApp] Connection closed. Reconnecting...', shouldReconnect);
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        
+        console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
+        
         if (shouldReconnect) {
-          initializeWhatsAppClient();
+          setTimeout(() => initializeWhatsAppClient(), 3000);
         }
       }
     });
@@ -172,7 +174,7 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     saveContactToGoogle({ adminName, teamName, phone });
   }
 
-  // 2. Store verification session in MongoDB (survives Render restarts)
+  // 2. Store verification session in MongoDB
   await Verification.create({
     verifyToken,
     otp: otpCode,
@@ -194,7 +196,7 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     };
   }
 
-  // 4. Automatic Email Fallback if Render just woke up from sleep and Baileys is reconnecting
+  // 4. Automatic Email Fallback if Baileys is reconnecting
   if (email) {
     if (webhookUrl) {
       try {
