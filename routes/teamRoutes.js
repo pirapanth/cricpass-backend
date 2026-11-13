@@ -5,6 +5,7 @@ const {
   registerTeam,
   verifyTeamOtp,
   completeTeamRegistration,
+  initiatePhoneChange,
   updateTeamPhone,
   getAllTeams,
   getTeamById,
@@ -24,6 +25,9 @@ router.post('/verify-otp', verifyTeamOtp);
 
 // Step 3: Complete registration (Set password & create team)
 router.post('/complete-registration', completeTeamRegistration);
+
+// Initiate new phone verification for logged-in Team Admin
+router.post('/initiate-phone-change', initiatePhoneChange);
 
 // Lookup team(s) by admin WhatsApp phone number (for Forgot Password flow)
 router.post('/lookup-by-phone', lookupTeamsByPhone);

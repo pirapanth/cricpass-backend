@@ -807,13 +807,85 @@ async function changeTeamPassword(req, res, next) {
 }
 
 /**
- * @desc    Change team admin email address (after dual OTP verification)
+ * @desc    Initiate new phone verification for logged-in Team Admin
+ * @route   POST /api/teams/initiate-phone-change
+ * @access  Public
+ */
+async function initiatePhoneChange(req, res, next) {
+  try {
+    const { team_id, new_phone } = req.body;
+
+    if (!team_id || !new_phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Both team_id and new_phone are required.'
+      });
+    }
+
+    const team = await resolveTeam(team_id);
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: `Team '${team_id}' not found.`
+      });
+    }
+
+    const formattedPhone = formatDisplayPhone(new_phone);
+    if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94770000000).'
+      });
+    }
+
+    if (team.phone_number === formattedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'New WhatsApp number cannot be identical to your current WhatsApp number.'
+      });
+    }
+
+    // Check if new phone is already registered to another team
+    const existingTeam = await Team.findOne({
+      phone_number: formattedPhone,
+      _id: { $ne: team._id }
+    });
+
+    if (existingTeam) {
+      return res.status(409).json({
+        success: false,
+        message: `WhatsApp number ${formattedPhone} is already registered to another team.`
+      });
+    }
+
+    // Call startTeamAdminVerification
+    const verificationResult = await startTeamAdminVerification({
+      adminName: team.admin_name || 'Team Administrator',
+      teamName: team.team_name,
+      phone: formattedPhone,
+      email: team.admin_email,
+      purpose: 'Change Admin WhatsApp Number'
+    });
+
+    return res.status(200).json({
+      success: true,
+      method: verificationResult.method,
+      verifyToken: verificationResult.verifyToken,
+      message: `Verification initiated for ${formattedPhone}.`
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @desc    Change team admin email address / WhatsApp number (after dual OTP verification)
  * @route   PUT /api/teams/change-email
  * @access  Public
  */
 async function changeTeamEmail(req, res, next) {
   try {
-    const { team_id, new_email, new_phone, new_password } = req.body;
+    const { team_id, new_email, new_phone, new_password, verifyToken } = req.body;
     const rawContact = new_phone || new_email;
 
     if (!team_id || !rawContact) {
@@ -826,6 +898,20 @@ async function changeTeamEmail(req, res, next) {
     const team = await resolveTeam(team_id);
     if (!team) {
       return res.status(404).json({ success: false, message: 'Team not found' });
+    }
+
+    // If verifyToken was supplied, ensure that OTP was verified
+    if (verifyToken) {
+      const vRecord = await Verification.findOne({
+        verifyToken: String(verifyToken).trim(),
+        verified: true
+      });
+      if (!vRecord) {
+        return res.status(400).json({
+          success: false,
+          message: 'Verification session expired or OTP has not been verified.'
+        });
+      }
     }
 
     const rawStr = String(rawContact).trim();
@@ -856,6 +942,12 @@ async function changeTeamEmail(req, res, next) {
     }
 
     if (new_password && String(new_password).trim()) {
+      if (String(new_password).trim().length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password must be at least 6 characters in length'
+        });
+      }
       team.password = String(new_password).trim();
     }
     await team.save();
@@ -909,6 +1001,7 @@ module.exports = {
   registerTeam,
   verifyTeamOtp,
   completeTeamRegistration,
+  initiatePhoneChange,
   updateTeamPhone,
   getAllTeams,
   getTeamById,

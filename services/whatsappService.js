@@ -133,8 +133,9 @@ async function initializeWhatsAppClient() {
           msg.message.extendedTextMessage?.text ||
           '';
 
-        const incomingCode = text.trim().toUpperCase();
-        if (!incomingCode.startsWith('VERIFY-')) continue;
+        const tokenMatch = text.toUpperCase().match(/VERIFY-[A-Z0-9]+/);
+        if (!tokenMatch) continue;
+        const incomingCode = tokenMatch[0];
 
         try {
           const record = await Verification.findOne({ verifyToken: incomingCode });
@@ -150,7 +151,7 @@ Your 6-Digit One-Time Password (OTP) is:
 👉 *${record.otp}*
 
 ⏰ This code is valid for *5 minutes*.
-🔒 Enter this code on the website to set your team password.
+🔒 Enter this code on the website to complete your verification.
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Cricket Registry & Transfer Protocol_`;
 
@@ -200,8 +201,8 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     expiresAt
   });
 
-  // 3. If Baileys WhatsApp is connected, return token for user-initiated wa.me chat
-  if (isReady && sock) {
+  // 3. If Baileys WhatsApp is connected or no webhookUrl configured, return token for user-initiated wa.me chat
+  if ((isReady && sock) || !webhookUrl) {
     return {
       success: true,
       method: 'whatsapp',
@@ -209,31 +210,27 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     };
   }
 
-  // 4. Automatic Email Fallback if Baileys is reconnecting
-  if (email) {
-    if (webhookUrl) {
-      try {
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: email,
-            subject: `CricPass Verification OTP - ${teamName || 'Team Admin'}`,
-            html: `
-              <div style="font-family: Arial, sans-serif; padding: 16px;">
-                <h2>🏏 CricPass Official Verification</h2>
-                <p>Your 6-digit verification code for <b>${teamName || 'your team'}</b> (${purpose}) is:</p>
-                <h1 style="letter-spacing: 4px; color: #16a34a;">${otpCode}</h1>
-                <p>Enter this code on the website to set your team password. Valid for 10 minutes.</p>
-              </div>
-            `
-          })
-        });
-      } catch (mailErr) {
-        console.warn('⚠️ [WhatsApp] Webhook email failed, continuing with fallback token:', mailErr.message);
-      }
-    } else {
-      console.log(`📧 [Simulated Email] Sent OTP ${otpCode} to ${email}`);
+  // 4. Automatic Email Fallback if Baileys is reconnecting and webhookUrl is configured
+  if (email && webhookUrl) {
+    try {
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: email,
+          subject: `CricPass Verification OTP - ${teamName || 'Team Admin'}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; padding: 16px;">
+              <h2>🏏 CricPass Official Verification</h2>
+              <p>Your 6-digit verification code for <b>${teamName || 'your team'}</b> (${purpose}) is:</p>
+              <h1 style="letter-spacing: 4px; color: #16a34a;">${otpCode}</h1>
+              <p>Enter this code on the website to complete your verification. Valid for 10 minutes.</p>
+            </div>
+          `
+        })
+      });
+    } catch (mailErr) {
+      console.warn('⚠️ [WhatsApp] Webhook email failed, continuing with fallback token:', mailErr.message);
     }
 
     return {
@@ -243,7 +240,11 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     };
   }
 
-  throw new Error('WhatsApp is reconnecting and no fallback email was provided.');
+  return {
+    success: true,
+    method: 'whatsapp',
+    verifyToken
+  };
 }
 
 /**
