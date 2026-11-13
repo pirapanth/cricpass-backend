@@ -1,9 +1,8 @@
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
-const { useMongoAuthState } = require('../utils/mongoAuthState');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
-const Verification = require('../models/Verification');
+const Verification = require('../models/Verification'); // Adjust path if your models folder is elsewhere
 
 let sock = null;
 let isReady = false;
@@ -58,14 +57,12 @@ async function saveContactToGoogle({ adminName, teamName, phone }) {
 }
 
 /**
- * Initialize Baileys WhatsApp Connection with MongoDB Auth State (Survives Render Restarts)
+ * Initialize Baileys WhatsApp Connection (No Chrome/Puppeteer required)
  */
 async function initializeWhatsAppClient() {
   try {
-    console.log('📱 [WhatsApp] Initializing Baileys with MongoDB Auth State...');
-    
-    // Uses MongoDB instead of local disk folder so credentials survive Render sleep
-    const { state, saveCreds } = await useMongoAuthState('cricpass_main');
+    console.log('📱 [WhatsApp] Initializing Baileys pure-socket client...');
+    const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
     sock = makeWASocket({
       auth: state,
@@ -112,7 +109,7 @@ async function initializeWhatsAppClient() {
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
 
-        const senderJid = msg.key.remoteJid;
+        const senderJid = msg.key.remoteJid; // Handles both @s.whatsapp.net and @lid seamlessly
         const text =
           msg.message.conversation ||
           msg.message.extendedTextMessage?.text ||
@@ -224,7 +221,7 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     return {
       success: true,
       method: 'email',
-      verifyToken
+      verifyToken // Still returned so frontend can pass it to Step 2 & Step 3
     };
   }
 
