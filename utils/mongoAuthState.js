@@ -12,9 +12,10 @@ async function useMongoAuthState(sessionId = 'cricpass_main') {
   const readData = async (key) => {
     try {
       const doc = await BaileysAuth.findOne({ sessionId: `${sessionId}_${key}` });
-      if (!doc) return null;
+      if (!doc || !doc.data) return null;
       return JSON.parse(JSON.stringify(doc.data), BufferJSON.reviver);
     } catch (error) {
+      console.warn(`⚠️ [BaileysAuth] Read error for ${key}:`, error.message);
       return null;
     }
   };
@@ -28,14 +29,16 @@ async function useMongoAuthState(sessionId = 'cricpass_main') {
         { upsert: true, new: true }
       );
     } catch (error) {
-      console.error(`❌ [BaileysAuth] Failed to write ${key}:`, error.message);
+      console.error(`❌ [BaileysAuth] Write error for ${key}:`, error.message);
     }
   };
 
   const removeData = async (key) => {
     try {
       await BaileysAuth.deleteOne({ sessionId: `${sessionId}_${key}` });
-    } catch (error) {}
+    } catch (error) {
+      console.warn(`⚠️ [BaileysAuth] Remove error for ${key}:`, error.message);
+    }
   };
 
   const creds = (await readData('creds')) || (await import('@whiskeysockets/baileys')).initAuthCreds();
