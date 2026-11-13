@@ -3,7 +3,8 @@ const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const Verification = require('../models/Verification'); // Adjust path if your models folder is elsewhere
-
+const fs = require('fs');
+const path = require('path');
 let sock = null;
 let isReady = false;
 
@@ -97,13 +98,25 @@ async function initializeWhatsAppClient() {
       } else if (connection === 'close') {
         isReady = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
-        console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
-        
-        if (shouldReconnect) {
-          setTimeout(() => initializeWhatsAppClient(), 3000);
+        console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}).`);
+
+        // If unauthorized (401) or logged out, clear the local auth folder so a fresh QR code generates
+        if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
+          console.log('🔄 [WhatsApp] Clearing stale session files to generate a fresh QR code...');
+          try {
+            const authPath = path.join(__dirname, '../auth_info_baileys');
+            if (fs.existsSync(authPath)) {
+              fs.rmSync(authPath, { recursive: true, force: true });
+            }
+          } catch (err) {
+            console.warn('⚠️ [WhatsApp] Could not clear auth folder:', err.message);
+          }
         }
+
+        // Always reconnect to generate the new QR code
+        console.log('🔄 [WhatsApp] Restarting client in 3 seconds...');
+        setTimeout(() => initializeWhatsAppClient(), 3000);
       }
     });
 
