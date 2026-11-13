@@ -101,9 +101,9 @@ async function initializeWhatsAppClient() {
         
         console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}).`);
 
-        // If unauthorized (401) or logged out, clear the local auth folder so a fresh QR code generates
+        // Only clear files if explicitly logged out or unauthorized (401)
         if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-          console.log('🔄 [WhatsApp] Clearing stale session files to generate a fresh QR code...');
+          console.log('🔄 [WhatsApp] Clearing stale session files...');
           try {
             const authPath = path.join(__dirname, '../auth_info_baileys');
             if (fs.existsSync(authPath)) {
@@ -112,11 +112,13 @@ async function initializeWhatsAppClient() {
           } catch (err) {
             console.warn('⚠️ [WhatsApp] Could not clear auth folder:', err.message);
           }
+          // Reconnect quickly to get a fresh QR code
+          setTimeout(() => initializeWhatsAppClient(), 3000);
+        } else {
+          // For network drops or standard closures, reconnect without wiping folder
+          console.log('🔄 [WhatsApp] Reconnecting in 5 seconds...');
+          setTimeout(() => initializeWhatsAppClient(), 5000);
         }
-
-        // Always reconnect to generate the new QR code
-        console.log('🔄 [WhatsApp] Restarting client in 3 seconds...');
-        setTimeout(() => initializeWhatsAppClient(), 3000);
       }
     });
 
