@@ -129,7 +129,7 @@ async function initializeWhatsAppClient() {
       }
     });
 
-    // Listen for incoming messages (e.g. manual VERIFY-XXXX prompts if needed)
+    // Listen for incoming VERIFY-XXXX messages from Team Admins (Inbound Verification)
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
@@ -137,38 +137,86 @@ async function initializeWhatsAppClient() {
         if (!msg.message || msg.key.fromMe) continue;
 
         const senderJid = msg.key.remoteJid;
+        if (!senderJid || senderJid.endsWith('@g.us') || senderJid === 'status@broadcast' || senderJid.endsWith('@broadcast')) {
+          continue;
+        }
+
+        // Extract text across all Baileys message structures (including ephemeral/viewOnce)
+        const unwrap =
+          msg.message.ephemeralMessage?.message ||
+          msg.message.viewOnceMessage?.message ||
+          msg.message.viewOnceMessageV2?.message ||
+          msg.message;
+
         const text =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
+          unwrap.conversation ||
+          unwrap.extendedTextMessage?.text ||
+          unwrap.imageMessage?.caption ||
+          unwrap.videoMessage?.caption ||
+          unwrap.documentMessage?.caption ||
           '';
 
         const tokenMatch = text.toUpperCase().match(/VERIFY-[A-Z0-9]+/);
         if (!tokenMatch) continue;
         const incomingCode = tokenMatch[0];
 
+        // Extract clean sender phone number for logging and cross-device correlation
+        // Format: 94728989748@s.whatsapp.net or 94728989748:1@s.whatsapp.net
+        const cleanSenderNumber = senderJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+        console.log(`📩 [WhatsApp Inbound] Received code "${incomingCode}" from sender: ${cleanSenderNumber} (${senderJid})`);
+
         try {
+          // Look up active verification session in MongoDB by verifyToken
           const record = await Verification.findOne({ verifyToken: incomingCode });
 
-          if (record && new Date() < record.expiresAt) {
-            const replyText =
+          if (!record) {
+            console.warn(`⚠️ [WhatsApp Inbound] No session found for token "${incomingCode}" from ${cleanSenderNumber}`);
+            await sock.sendMessage(senderJid, {
+              text: `⚠️ *CricPass Verification Notice*\n━━━━━━━━━━━━━━━━━━━━━━\nWe could not find an active verification session for code *${incomingCode}*.\n\nPlease check the code or generate a new one on the CricPass website.`
+            }, { quoted: msg });
+            continue;
+          }
+
+          if (new Date() >= record.expiresAt) {
+            console.warn(`⚠️ [WhatsApp Inbound] Token "${incomingCode}" has expired (expired at ${record.expiresAt})`);
+            await sock.sendMessage(senderJid, {
+              text: `⚠️ *CricPass Verification Notice*\n━━━━━━━━━━━━━━━━━━━━━━\nThe verification code *${incomingCode}* has expired.\n\nPlease request a fresh verification code on the CricPass website.`
+            }, { quoted: msg });
+            continue;
+          }
+
+          // Cross-device / Phone Number correlation:
+          // The admin may be registering from a computer and sending from personal WhatsApp (e.g. 0728989748)
+          const recordDigits = (record.phone || '').replace(/\D/g, '');
+          const phoneMatches =
+            recordDigits &&
+            (cleanSenderNumber.endsWith(recordDigits.slice(-9)) ||
+             recordDigits.endsWith(cleanSenderNumber.slice(-9)));
+
+          if (phoneMatches) {
+            console.log(`📱 [WhatsApp Inbound] Phone matched registered number (${record.phone}) for token ${incomingCode}`);
+          } else {
+            console.log(`📱 [WhatsApp Inbound] Cross-device token match: Sender ${cleanSenderNumber}, Registered ${record.phone || 'N/A'}`);
+          }
+
+          const replyText =
 `🏏 *CricPass Official Verification*
 ━━━━━━━━━━━━━━━━━━━━━━
 An authorization request was initiated for:
-*${record.purpose}* (${record.teamName})
+*${record.purpose || 'Team Registration'}* (${record.teamName})
 
 Your 6-Digit One-Time Password (OTP) is:
 👉 *${record.otp}*
 
-⏰ This code is valid for *5 minutes*.
+⏰ This code is valid for *10 minutes*.
 🔒 Enter this code on the website to complete your verification.
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Cricket Registry & Transfer Protocol_`;
 
-            await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
-            console.log(`✅ [WhatsApp] Replied with OTP to ${senderJid} for token ${incomingCode}`);
-          }
+          await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
+          console.log(`✅ [WhatsApp Inbound] Successfully replied with OTP to ${senderJid} for token ${incomingCode}`);
         } catch (dbErr) {
-          console.error('❌ [WhatsApp] Error looking up verification token:', dbErr.message);
+          console.error(`❌ [WhatsApp Inbound] Error handling verification token ${incomingCode}:`, dbErr.message);
         }
       }
     });
@@ -180,15 +228,18 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 }
 
 /**
- * Step 1: Start Team Admin Verification (Sends Outbound WhatsApp OTP or falls back to Email)
+ * Step 1: Start Team Admin Verification (Saves token & OTP to MongoDB Verification collection)
+ * STRICT OUTBOUND RULE:
+ * The backend does NOT send any automatic outbound WhatsApp messages.
+ * The verification is strictly user-initiated: user clicks "Send Verify Code via WhatsApp"
+ * to send the VERIFY-XXXX code to the bot, and the bot replies with the 6-digit OTP.
  */
 async function startTeamAdminVerification({ adminName, teamName, phone, email, purpose = 'Team Registration' }) {
   const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
   const verifyToken = `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`;
-  const webhookUrl = process.env.GMAIL_WEBHOOK_URL?.trim();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // Valid 10 minutes
 
-  // 1. Save Team Admin number into Google Contacts in the background
+  // 1. Save Team Admin number into Google Contacts in the background if configured
   if (phone) {
     saveContactToGoogle({ adminName, teamName, phone });
   }
@@ -206,55 +257,12 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
     expiresAt
   });
 
-  // 3. If WhatsApp is ready, send the 6-digit OTP directly to the user's phone via WhatsApp outbound message!
-  if (isReady && sock && phone) {
-    try {
-      await sendWhatsAppOTP(phone, otpCode, purpose);
-      console.log(`📱 [WhatsApp] Successfully sent OTP directly to ${phone}`);
-      return {
-        success: true,
-        method: 'whatsapp',
-        verifyToken
-      };
-    } catch (waErr) {
-      console.warn('⚠️ [WhatsApp] Direct outbound OTP failed, trying email fallback:', waErr.message);
-    }
-  }
+  console.log(`🔐 [Verification] Created session for "${teamName}" (${phone || 'No phone'}). Token: ${verifyToken}, OTP: ${otpCode}. Awaiting user-initiated inbound message.`);
 
-  // 4. Automatic Email Fallback if WhatsApp is disconnected or outbound failed
-  if (email && webhookUrl) {
-    try {
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: email,
-          subject: `CricPass Verification OTP - ${teamName || 'Team Admin'}`,
-          html: `
-            <div style="font-family: Arial, sans-serif; padding: 16px;">
-              <h2>🏏 CricPass Official Verification</h2>
-              <p>Your 6-digit verification code for <b>${teamName || 'your team'}</b> (${purpose}) is:</p>
-              <h1 style="letter-spacing: 4px; color: #16a34a;">${otpCode}</h1>
-              <p>Enter this code on the website to complete your verification. Valid for 10 minutes.</p>
-            </div>
-          `
-        })
-      });
-      console.log(`📧 [Email Fallback] Sent OTP to ${email}`);
-    } catch (mailErr) {
-      console.warn('⚠️ [Email Fallback] Webhook email failed:', mailErr.message);
-    }
-
-    return {
-      success: true,
-      method: 'email',
-      verifyToken
-    };
-  }
-
+  // 3. Return verification token for user-initiated wa.me message to bot
   return {
     success: true,
-    method: 'whatsapp-token',
+    method: 'whatsapp',
     verifyToken
   };
 }
