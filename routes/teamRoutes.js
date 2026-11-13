@@ -3,6 +3,8 @@ const router = express.Router();
 const {
   loginTeamAdmin,
   registerTeam,
+  verifyTeamOtp,
+  completeTeamRegistration,
   updateTeamPhone,
   getAllTeams,
   getTeamById,
@@ -14,8 +16,14 @@ const {
 // Team Admin login (Authenticates against MongoDB Atlas database)
 router.post('/login', loginTeamAdmin);
 
-// Register a new team
+// Step 1: Register team (Start verification)
 router.post('/register', registerTeam);
+
+// Step 2: Verify 6-digit OTP
+router.post('/verify-otp', verifyTeamOtp);
+
+// Step 3: Complete registration (Set password & create team)
+router.post('/complete-registration', completeTeamRegistration);
 
 // Lookup team(s) by admin WhatsApp phone number (for Forgot Password flow)
 router.post('/lookup-by-phone', lookupTeamsByPhone);

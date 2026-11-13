@@ -2,9 +2,11 @@ const mongoose = require('mongoose');
 const Team = require('../models/Team');
 const Player = require('../models/Player');
 const PhoneUpdateSession = require('../models/PhoneUpdateSession');
+const Verification = require('../models/Verification');
 const { generateOTP, sendSimulatedSMS } = require('../utils/otpGenerator');
 const { sendTeamCredentialsEmail } = require('../services/emailService');
 const {
+  startTeamAdminVerification,
   sendNewTeamRegistrationWhatsApp,
   sendPasswordChangedWhatsApp,
   sendWhatsAppNumberChangedWhatsApp,
@@ -153,127 +155,248 @@ async function loginTeamAdmin(req, res, next) {
 }
 
 /**
- * @desc    Create a team with automatic unique team_id and encrypted password
+ * @desc    Step 1: Start Team Admin Verification (Validates uniqueness, saves session in Verification collection, returns verifyToken)
  * @route   POST /api/teams/register
  * @access  Public
  */
 async function registerTeam(req, res, next) {
   try {
     const {
-      team_id,
-      team_name: rawTeamName,
-      teamName,
-      admin_name: rawAdminName,
-      adminName,
-      admin_email: rawAdminEmail,
-      email,
-      phone_number: rawPhone,
-      phone,
-      password,
-      image_url
+      adminName: rawAdminName,
+      admin_name,
+      teamName: rawTeamName,
+      team_name,
+      phone: rawPhone,
+      phone_number,
+      email: rawEmail,
+      admin_email
     } = req.body;
 
-    const team_name = teamName || rawTeamName;
-    const admin_name = adminName || rawAdminName;
-    const phone_number = phone || rawPhone;
-    const admin_email = email || rawAdminEmail;
+    const adminName = (rawAdminName || admin_name || '').trim();
+    const teamName = (rawTeamName || team_name || '').trim();
+    const phone = (rawPhone || phone_number || '').trim();
+    const email = (rawEmail || admin_email || '').trim().toLowerCase();
 
     // Validate required fields
-    if (!team_name || !team_name.trim()) {
-      return res.status(400).json({ success: false, message: 'team_name / teamName is required' });
+    if (!teamName) {
+      return res.status(400).json({ success: false, message: 'Team / Club Name is required.' });
     }
-    if (!admin_name || !admin_name.trim()) {
-      return res.status(400).json({ success: false, message: 'admin_name / adminName is required' });
+    if (!adminName) {
+      return res.status(400).json({ success: false, message: 'Admin Full Name is required.' });
     }
-    if (!phone_number || !phone_number.trim()) {
-      return res.status(400).json({ success: false, message: 'WhatsApp phone / phone_number is required' });
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'WhatsApp Phone Number is required.' });
+    }
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ success: false, message: 'A valid Admin Email is required.' });
     }
 
-    const formattedPhone = formatDisplayPhone(phone_number.trim());
+    const formattedPhone = formatDisplayPhone(phone);
     if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
       return res.status(400).json({
         success: false,
-        message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94770000000)'
+        message: 'WhatsApp number must be +94 followed by 9 digits without a leading 0 (e.g. +94770000000).'
       });
     }
 
-    const normalizedEmail =
-      admin_email && admin_email.trim()
-        ? admin_email.trim().toLowerCase()
-        : `${formattedPhone.replace(/\D/g, '')}@cricpass.lk`;
+    // Check if team name, phone, or email is already registered in main Team collection
+    const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const existingTeam = await Team.findOne({
+      $or: [
+        { team_name: { $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i') } },
+        { phone_number: formattedPhone },
+        { admin_email: email }
+      ]
+    });
 
-    // Determine final team_id (automatic and unique)
-    let finalTeamId = '';
-    if (team_id && String(team_id).trim() && String(team_id).trim().toUpperCase() !== 'AUTO') {
-      finalTeamId = String(team_id).trim().toUpperCase();
-      const existingTeam = await Team.findOne({ team_id: finalTeamId });
-      if (existingTeam) {
+    if (existingTeam) {
+      if (existingTeam.team_name.toLowerCase() === teamName.toLowerCase()) {
         return res.status(409).json({
           success: false,
-          message: `Team with ID '${finalTeamId}' already exists. Please choose another or let it generate automatically.`
+          message: `Team name "${teamName}" is already registered. Please choose another name.`
         });
       }
-    } else {
-      finalTeamId = await generateUniqueTeamId(team_name.trim());
+      if (existingTeam.phone_number === formattedPhone) {
+        return res.status(409).json({
+          success: false,
+          message: `WhatsApp number "${formattedPhone}" is already registered to a team.`
+        });
+      }
+      if (existingTeam.admin_email && existingTeam.admin_email.toLowerCase() === email.toLowerCase()) {
+        return res.status(409).json({
+          success: false,
+          message: `Admin email "${email}" is already registered to a team.`
+        });
+      }
+      return res.status(409).json({
+        success: false,
+        message: 'This team name, phone number, or email is already registered.'
+      });
     }
 
-    const rawPassword = password && String(password).trim() ? String(password).trim() : formattedPhone;
+    // Call startTeamAdminVerification from whatsappService.js
+    const verificationResult = await startTeamAdminVerification({
+      adminName,
+      teamName,
+      phone: formattedPhone,
+      email,
+      purpose: 'Team Registration'
+    });
 
-    // Create team document with encrypted password
+    return res.status(200).json({
+      success: true,
+      method: verificationResult.method,
+      verifyToken: verificationResult.verifyToken
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @desc    Step 2: Verify 6-digit OTP
+ * @route   POST /api/teams/verify-otp
+ * @access  Public
+ */
+async function verifyTeamOtp(req, res, next) {
+  try {
+    const { verifyToken, otp } = req.body;
+
+    if (!verifyToken || !otp) {
+      return res.status(400).json({
+        success: false,
+        error: 'verifyToken and otp are required.',
+        message: 'verifyToken and otp are required.'
+      });
+    }
+
+    const cleanToken = String(verifyToken).trim();
+    const cleanOtp = String(otp).trim();
+
+    const record = await Verification.findOne({
+      verifyToken: cleanToken,
+      otp: cleanOtp,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!record) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid or expired OTP.',
+        message: 'Invalid or expired OTP.'
+      });
+    }
+
+    record.verified = true;
+    await record.save();
+
+    return res.status(200).json({
+      success: true,
+      verified: true,
+      verifyToken: record.verifyToken
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @desc    Step 3: Complete Registration (Set Password & Create Team)
+ * @route   POST /api/teams/complete-registration
+ * @access  Public
+ */
+async function completeTeamRegistration(req, res, next) {
+  try {
+    const { verifyToken, password, confirmPassword } = req.body;
+
+    if (!verifyToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Verification session expired or unverified.',
+        message: 'Verification session expired or unverified.'
+      });
+    }
+
+    if (!password || String(password).trim().length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 6 characters in length.',
+        message: 'Password must be at least 6 characters in length.'
+      });
+    }
+
+    if (confirmPassword !== undefined && password !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Passwords do not match. Please verify both fields.',
+        message: 'Passwords do not match. Please verify both fields.'
+      });
+    }
+
+    const cleanToken = String(verifyToken).trim();
+    const record = await Verification.findOne({
+      verifyToken: cleanToken,
+      verified: true
+    });
+
+    if (!record) {
+      return res.status(400).json({
+        success: false,
+        error: 'Verification session expired or unverified.',
+        message: 'Verification session expired or unverified.'
+      });
+    }
+
+    // Generate unique Team ID
+    const generatedTeamId = await generateUniqueTeamId(record.teamName);
+    const cleanPassword = String(password).trim();
+
+    // Create official Team in MongoDB (password will be hashed by pre-save hook)
     const team = new Team({
-      team_id: finalTeamId,
-      team_name: team_name.trim(),
-      admin_name: admin_name.trim(),
-      admin_email: normalizedEmail,
-      phone_number: formattedPhone,
-      password: rawPassword,
-      image_url: image_url || null
+      team_id: generatedTeamId,
+      team_name: record.teamName,
+      admin_name: record.adminName,
+      admin_email: record.email,
+      phone_number: record.phone,
+      password: cleanPassword
     });
 
     await team.save();
 
-    // Send official registration credentials via WhatsApp
+    // Send WhatsApp credentials
     try {
       await sendNewTeamRegistrationWhatsApp({
-        recipientPhone: formattedPhone,
-        teamId: finalTeamId,
-        teamName: team.team_name,
-        adminName: team.admin_name,
-        password: rawPassword
+        recipientPhone: record.phone,
+        teamName: record.teamName,
+        teamId: generatedTeamId,
+        adminName: record.adminName,
+        password: cleanPassword
       });
     } catch (waErr) {
-      console.warn('⚠️ Could not dispatch team credentials WhatsApp:', waErr.message);
+      console.warn('⚠️ Could not dispatch WhatsApp credentials:', waErr.message);
     }
 
-    // Also dispatch email only if a non-placeholder email was provided
-    if (admin_email && admin_email.trim() && !normalizedEmail.endsWith('@cricpass.lk')) {
+    // Send email credentials if non-placeholder
+    if (record.email && !record.email.endsWith('@cricpass.lk')) {
       try {
         await sendTeamCredentialsEmail({
-          recipientEmail: normalizedEmail,
-          teamId: finalTeamId,
-          teamName: team.team_name,
-          password: rawPassword
+          recipientEmail: record.email,
+          teamId: generatedTeamId,
+          teamName: record.teamName,
+          password: cleanPassword
         });
       } catch (mailErr) {
-        console.warn('⚠️ Could not dispatch team credentials email:', mailErr.message);
+        console.warn('⚠️ Could not dispatch email credentials:', mailErr.message);
       }
     }
 
-    const teamObj = team.toObject();
-    delete teamObj.password;
+    // Delete temporary verification record
+    await Verification.deleteOne({ _id: record._id });
 
-    const isWaReady = typeof isWhatsAppReady === 'function' ? isWhatsAppReady() : false;
-    const method = isWaReady ? 'whatsapp' : 'email';
-    const verifyToken = isWaReady
-      ? `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`
-      : undefined;
-
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message: `Team "${team.team_name}" registered successfully with unique ID: ${finalTeamId}.`,
-      data: teamObj,
-      method,
-      verifyToken
+      teamId: generatedTeamId,
+      teamName: record.teamName
     });
   } catch (error) {
     next(error);
@@ -784,6 +907,8 @@ async function changeTeamEmail(req, res, next) {
 module.exports = {
   loginTeamAdmin,
   registerTeam,
+  verifyTeamOtp,
+  completeTeamRegistration,
   updateTeamPhone,
   getAllTeams,
   getTeamById,

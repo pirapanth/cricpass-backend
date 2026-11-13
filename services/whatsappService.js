@@ -2,13 +2,10 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
+const Verification = require('../models/Verification'); // Adjust path if your models folder is elsewhere
 
 let sock = null;
 let isReady = false;
-
-// Stores pending user-initiated verifications:
-// { "VERIFY-4829": { otp: "654321", teamName: "USSC", purpose: "Team Registration", expiresAt: 1731490000000 } }
-const pendingVerifications = new Map();
 
 /**
  * Format phone number into international digit string (e.g., Sri Lanka +94)
@@ -105,24 +102,27 @@ async function initializeWhatsAppClient() {
       }
     });
 
-    // Listen for incoming "VERIFY-XXXX" messages from Team Admins (Zero Ban Risk)
+    // Listen for incoming "VERIFY-XXXX" messages from Team Admins (Reads from MongoDB)
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
 
-        const senderJid = msg.key.remoteJid; // Works for both @s.whatsapp.net and @lid
+        const senderJid = msg.key.remoteJid; // Handles both @s.whatsapp.net and @lid seamlessly
         const text =
           msg.message.conversation ||
           msg.message.extendedTextMessage?.text ||
           '';
 
         const incomingCode = text.trim().toUpperCase();
-        const record = pendingVerifications.get(incomingCode);
+        if (!incomingCode.startsWith('VERIFY-')) continue;
 
-        if (record && Date.now() < record.expiresAt) {
-          const replyText =
+        try {
+          const record = await Verification.findOne({ verifyToken: incomingCode });
+
+          if (record && new Date() < record.expiresAt) {
+            const replyText =
 `🏏 *CricPass Official Verification*
 ━━━━━━━━━━━━━━━━━━━━━━
 An authorization request was initiated for:
@@ -132,13 +132,19 @@ Your 6-Digit One-Time Password (OTP) is:
 👉 *${record.otp}*
 
 ⏰ This code is valid for *5 minutes*.
-🔒 For your security, do not share this code with anyone.
+🔒 Enter this code on the website to set your team password.
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Cricket Registry & Transfer Protocol_`;
 
-          await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
-          console.log(`✅ [WhatsApp] Replied with OTP to ${senderJid} for token ${incomingCode}`);
-          pendingVerifications.delete(incomingCode);
+            await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
+            console.log(`✅ [WhatsApp] Replied with OTP to ${senderJid} for token ${incomingCode}`);
+          } else {
+            await sock.sendMessage(senderJid, {
+              text: '⚠️ This verification code is invalid or has expired. Please request a new one on the CricPass website.'
+            }, { quoted: msg });
+          }
+        } catch (dbErr) {
+          console.error('❌ [WhatsApp] Error looking up verification token:', dbErr.message);
         }
       }
     });
@@ -150,64 +156,72 @@ _CricPass Cricket Registry & Transfer Protocol_`;
 }
 
 /**
- * Smart Hybrid Verification (WhatsApp First-Message + Google Contact Save + Email Fallback)
+ * Step 1: Start Team Admin Verification (Saves session to MongoDB + Google Contacts + Email Fallback)
  */
-async function startTeamAdminVerification({ adminName, teamName, phone, email, purpose = 'Team Verification' }) {
+async function startTeamAdminVerification({ adminName, teamName, phone, email, purpose = 'Team Registration' }) {
   const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const verifyToken = `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`;
   const webhookUrl = process.env.GMAIL_WEBHOOK_URL?.trim();
-
-  // Purge expired verification tokens from memory
-  const now = Date.now();
-  for (const [key, val] of pendingVerifications.entries()) {
-    if (now >= val.expiresAt) pendingVerifications.delete(key);
-  }
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // Valid 10 minutes
 
   // 1. Save Team Admin number into Google Contacts in the background
   if (phone) {
     saveContactToGoogle({ adminName, teamName, phone });
   }
 
-  // 2. If Baileys WhatsApp is connected, return token for user-initiated wa.me chat
-  if (isReady && sock) {
-    const verifyToken = `VERIFY-${Math.floor(1000 + Math.random() * 9000)}`;
-    pendingVerifications.set(verifyToken, {
-      otp: otpCode,
-      teamName: teamName || 'CricPass Club',
-      purpose,
-      expiresAt: now + 10 * 60 * 1000 // Valid 10 minutes
-    });
+  // 2. Store verification session in MongoDB (survives Render restarts)
+  await Verification.create({
+    verifyToken,
+    otp: otpCode,
+    teamName: teamName || 'CricPass Club',
+    adminName: adminName || 'Team Administrator',
+    phone,
+    email,
+    purpose,
+    verified: false,
+    expiresAt
+  });
 
+  // 3. If Baileys WhatsApp is connected, return token for user-initiated wa.me chat
+  if (isReady && sock) {
     return {
       success: true,
       method: 'whatsapp',
-      verifyToken,
-      otpCode
+      verifyToken
     };
   }
 
-  // 3. Automatic Email Fallback if Render just woke up from sleep and Baileys is reconnecting
-  if (webhookUrl && email) {
-    await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: email,
-        subject: `CricPass Verification OTP - ${teamName || 'Team Admin'}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; padding: 16px;">
-            <h2>🏏 CricPass Official Verification</h2>
-            <p>Your 6-digit verification code for <b>${teamName || 'your team'}</b> (${purpose}) is:</p>
-            <h1 style="letter-spacing: 4px; color: #16a34a;">${otpCode}</h1>
-            <p>This code is valid for 5 minutes.</p>
-          </div>
-        `
-      })
-    });
+  // 4. Automatic Email Fallback if Render just woke up from sleep and Baileys is reconnecting
+  if (email) {
+    if (webhookUrl) {
+      try {
+        await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: email,
+            subject: `CricPass Verification OTP - ${teamName || 'Team Admin'}`,
+            html: `
+              <div style="font-family: Arial, sans-serif; padding: 16px;">
+                <h2>🏏 CricPass Official Verification</h2>
+                <p>Your 6-digit verification code for <b>${teamName || 'your team'}</b> (${purpose}) is:</p>
+                <h1 style="letter-spacing: 4px; color: #16a34a;">${otpCode}</h1>
+                <p>Enter this code on the website to set your team password. Valid for 10 minutes.</p>
+              </div>
+            `
+          })
+        });
+      } catch (mailErr) {
+        console.warn('⚠️ [WhatsApp] Webhook email failed, continuing with fallback token:', mailErr.message);
+      }
+    } else {
+      console.log(`📧 [Simulated Email] Sent OTP ${otpCode} to ${email}`);
+    }
 
     return {
       success: true,
       method: 'email',
-      otpCode
+      verifyToken // Still returned so frontend can pass it to Step 2 & Step 3
     };
   }
 
@@ -218,9 +232,7 @@ async function startTeamAdminVerification({ adminName, teamName, phone, email, p
  * Send 6-digit WhatsApp OTP verification message (Direct Outbound)
  */
 async function sendWhatsAppOTP(phoneNumber, otpCode, purpose = 'Verification') {
-  if (!phoneNumber) {
-    throw new Error('Recipient phone number is required');
-  }
+  if (!phoneNumber) throw new Error('Recipient phone number is required');
 
   const cleanPhone = formatPhoneNumber(phoneNumber);
   if (!cleanPhone || cleanPhone.length < 8) {
@@ -243,29 +255,20 @@ Your 6-Digit One-Time Password (OTP) is:
 ━━━━━━━━━━━━━━━━━━━━━━
 _CricPass Cricket Registry & Transfer Protocol_`;
 
-  console.log(`📱 [WhatsApp] Attempting to send OTP to JID: ${jid} (Ready: ${isReady}, Socket exists: ${!!sock})`);
-
   if (sock) {
     try {
       let targetJid = jid;
       try {
         const [result] = await sock.onWhatsApp(cleanPhone);
-        if (result && result.exists) {
-          targetJid = result.jid;
-        }
-      } catch (lookupErr) {
-        console.warn('⚠️ [WhatsApp] onWhatsApp check skipped/failed, using standard jid:', lookupErr.message);
-      }
+        if (result && result.exists) targetJid = result.jid;
+      } catch (lookupErr) {}
 
       const response = await sock.sendMessage(targetJid, { text: messageText });
-      console.log(`✅ [WhatsApp] OTP successfully delivered to ${targetJid} (ID: ${response?.key?.id})`);
       return { success: true, phone: cleanPhone, messageId: response?.key?.id };
     } catch (err) {
-      console.error(`❌ [WhatsApp] Failed to deliver message to ${jid}:`, err.message);
       throw new Error(`WhatsApp delivery failed: ${err.message}`);
     }
   } else {
-    console.warn(`⚠️ [WhatsApp] Socket not initialized. Simulated OTP: ${otpCode}`);
     return { success: true, simulated: true, phone: cleanPhone, otpCode };
   }
 }
@@ -279,7 +282,6 @@ async function sendGenericWhatsAppMessage(rawPhone, messageText) {
   if (!cleanPhone || cleanPhone.length < 8) return null;
 
   const jid = `${cleanPhone}@s.whatsapp.net`;
-  console.log(`📱 [WhatsApp] Dispatching message to: ${jid}`);
 
   if (sock) {
     try {
@@ -287,29 +289,22 @@ async function sendGenericWhatsAppMessage(rawPhone, messageText) {
       try {
         if (typeof sock.onWhatsApp === 'function') {
           const [result] = await sock.onWhatsApp(cleanPhone);
-          if (result && result.exists) {
-            targetJid = result.jid;
-          }
+          if (result && result.exists) targetJid = result.jid;
         }
-      } catch (lookupErr) {
-        // Fall back to direct jid
-      }
+      } catch (lookupErr) {}
 
       const response = await sock.sendMessage(targetJid, { text: messageText });
-      console.log(`✅ [WhatsApp] Message successfully delivered to ${targetJid} (ID: ${response?.key?.id})`);
       return { success: true, phone: cleanPhone, messageId: response?.key?.id };
     } catch (err) {
-      console.error(`❌ [WhatsApp] Failed to deliver message to ${jid}:`, err.message);
       return { success: false, error: err.message };
     }
   } else {
-    console.warn(`⚠️ [WhatsApp] Socket not connected. Simulated dispatch to +${cleanPhone}:\n${messageText}`);
     return { success: true, simulated: true, phone: cleanPhone };
   }
 }
 
 /**
- * 1. Send credentials when a new team is registered
+ * 1. Send credentials when a new team is registered (Called in Step 3 AFTER password is set)
  */
 async function sendNewTeamRegistrationWhatsApp({ recipientPhone, teamName, teamId, adminName, password }) {
   const messageText =
@@ -429,25 +424,18 @@ _CricPass Official Transfer Protocol_`;
   if (currentTeamPhone) {
     try {
       results.currentTeam = await sendGenericWhatsAppMessage(currentTeamPhone, currentTeamMsg);
-    } catch (err) {
-      console.warn('⚠️ [WhatsApp] Failed to notify current team admin:', err.message);
-    }
+    } catch (err) {}
   }
 
   if (newTeamPhone) {
     try {
       results.newTeam = await sendGenericWhatsAppMessage(newTeamPhone, newTeamMsg);
-    } catch (err) {
-      console.warn('⚠️ [WhatsApp] Failed to notify receiving team admin:', err.message);
-    }
+    } catch (err) {}
   }
 
   return results;
 }
 
-/**
- * Backwards-compatible alias for team credentials
- */
 async function sendTeamCredentialsWhatsApp({ recipientPhone, teamId, teamName, adminName, password }) {
   return await sendNewTeamRegistrationWhatsApp({ recipientPhone, teamId, teamName, adminName, password });
 }
