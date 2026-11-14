@@ -94,10 +94,10 @@ async function initializeWhatsAppClient() {
         qrcodeTerminal.generate(qr, { small: true });
 
         try {
-          const qrImageUrl = await QRCode.toDataURL(qr);
-          console.log('\n🔗 COPY THIS URL & PASTE IN YOUR BROWSER FOR A CRISP QR CODE:');
-          console.log(qrImageUrl);
-          console.log('\n=============================================================\n');
+          const qrImageUrl = await QRCode.toDataURL(qr, { scale: 8 });
+          console.log('🔗 COPY THIS ENTIRE URL & PASTE IN YOUR BROWSER ADDRESS BAR:');
+          console.log('\n' + qrImageUrl + '\n');
+          console.log('=============================================================\n');
         } catch (err) {
           console.error('⚠️ [WhatsApp] Failed to generate browser QR image:', err.message);
         }
