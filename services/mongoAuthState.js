@@ -1,24 +1,13 @@
-const mongoose = require('mongoose');
-
-// Define a simple schema for WhatsApp Session Keys
-const WhatsAppAuthSchema = new mongoose.Schema({
-  key: { type: String, required: true, unique: true },
-  data: { type: mongoose.Schema.Types.Mixed, required: true }
-});
-
-const WhatsAppAuth = mongoose.models.WhatsAppAuth || mongoose.model('WhatsAppAuth', WhatsAppAuthSchema);
+const { initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
+const WhatsAppAuth = require('../models/WhatsAppAuth');
 
 async function useMongoAuthState() {
   const readData = async (key) => {
     try {
       const doc = await WhatsAppAuth.findOne({ key });
       if (!doc) return null;
-      return JSON.parse(JSON.stringify(doc.data), (k, v) => {
-        if (v !== null && typeof v === 'object' && v.type === 'Buffer') {
-          return Buffer.from(v.data);
-        }
-        return v;
-      });
+      // Use Baileys built-in Buffer JSON reviver
+      return JSON.parse(JSON.stringify(doc.data), BufferJSON.reviver);
     } catch (error) {
       return null;
     }
@@ -26,13 +15,8 @@ async function useMongoAuthState() {
 
   const writeData = async (key, data) => {
     try {
-      const serialized = JSON.parse(JSON.stringify(data, (k, v) => {
-        if (Buffer.isBuffer(v) || v instanceof Uint8Array) {
-          return { type: 'Buffer', data: Array.from(v) };
-        }
-        return v;
-      }));
-
+      // Use Baileys built-in Buffer JSON replacer
+      const serialized = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
       await WhatsAppAuth.findOneAndUpdate(
         { key },
         { data: serialized },
@@ -49,11 +33,12 @@ async function useMongoAuthState() {
     } catch (error) {}
   };
 
-  const creds = (await readData('creds')) || {
-    pairingCode: undefined,
-    lastAccountSyncTimestamp: 0,
-    creds: {}
-  };
+  // Load existing credentials or initialize fresh cryptographic keys
+  let creds = await readData('creds');
+  if (!creds) {
+    creds = initAuthCreds();
+    await writeData('creds', creds);
+  }
 
   return {
     state: {
