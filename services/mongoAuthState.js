@@ -31,45 +31,46 @@ async function useMongoAuthState() {
     } catch (error) {}
   };
 
-  // Properly initialize Baileys cryptographic credentials if none exist
   let creds = await readData('creds');
   if (!creds) {
     creds = initAuthCreds();
     await writeData('creds', creds);
   }
 
-  return {
-    state: {
-      creds,
-      keys: {
-        get: async (type, ids) => {
-          const data = {};
-          for (const id of ids) {
-            let value = await readData(`${type}-${id}`);
-            if (type === 'app-state-sync-key' && value) {
-              value = Buffer.from(value);
-            }
-            data[id] = value;
+  const state = {
+    creds,
+    keys: {
+      get: async (type, ids) => {
+        const data = {};
+        for (const id of ids) {
+          let value = await readData(`${type}-${id}`);
+          if (type === 'app-state-sync-key' && value) {
+            value = Buffer.from(value);
           }
-          return data;
-        },
-        set: async (data) => {
-          const tasks = [];
-          for (const category of Object.keys(data)) {
-            for (const id of Object.keys(data[category])) {
-              const value = data[category][id];
-              const key = `${category}-${id}`;
-              if (value) {
-                tasks.push(writeData(key, value));
-              } else {
-                tasks.push(removeData(key));
-              }
-            }
-          }
-          await Promise.all(tasks);
+          data[id] = value;
         }
+        return data;
+      },
+      set: async (data) => {
+        const tasks = [];
+        for (const category of Object.keys(data)) {
+          for (const id of Object.keys(data[category])) {
+            const value = data[category][id];
+            const key = `${category}-${id}`;
+            if (value) {
+              tasks.push(writeData(key, value));
+            } else {
+              tasks.push(removeData(key));
+            }
+          }
+        }
+        await Promise.all(tasks);
       }
-    },
+    }
+  };
+
+  return {
+    state,
     saveCreds: async () => {
       await writeData('creds', state.creds);
     }
