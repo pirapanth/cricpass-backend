@@ -18,7 +18,7 @@ async function useMongoAuthState() {
       await WhatsAppAuth.findOneAndUpdate(
         { key },
         { data: serialized },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' } // Updated to remove warning
       );
     } catch (error) {
       console.error(`❌ [Auth Write Error] Key ${key}:`, error.message);
