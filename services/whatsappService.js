@@ -1,10 +1,9 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const Verification = require('../models/Verification');
-const fs = require('fs');
-const path = require('path');
+const useMongoAuthState = require('./mongoAuthState'); // Updated to use MongoDB persistence!
 
 let sock = null;
 let isReady = false;
@@ -59,15 +58,14 @@ async function saveContactToGoogle({ adminName, teamName, phone }) {
 }
 
 /**
- * Initialize Baileys WhatsApp Connection with Local Multi-File Auth State
+ * Initialize Baileys WhatsApp Connection with MongoDB Persistence State
  */
 async function initializeWhatsAppClient() {
   try {
-    console.log('📱 [WhatsApp] Initializing Baileys with local multi-file auth state...');
+    console.log('📱 [WhatsApp] Initializing Baileys with MongoDB Atlas persistence...');
     
-    // Auth state directory
-    const authDir = path.join(__dirname, '../auth_info_baileys');
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    // Uses MongoDB Atlas instead of local files so it survives Render reboots & spin-downs
+    const { state, saveCreds } = await useMongoAuthState();
     
     let version;
     try {
@@ -115,14 +113,7 @@ async function initializeWhatsAppClient() {
         console.warn(`⚠️ [WhatsApp] Connection closed (Status: ${statusCode}).`);
 
         if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-          console.log('🔄 [WhatsApp] Session logged out or 401 received. Clearing stale session files...');
-          try {
-            if (fs.existsSync(authDir)) {
-              fs.rmSync(authDir, { recursive: true, force: true });
-            }
-          } catch (err) {
-            console.warn('⚠️ [WhatsApp] Could not clear auth folder:', err.message);
-          }
+          console.log('🔄 [WhatsApp] Session logged out or 401 received.');
           setTimeout(() => initializeWhatsAppClient(), 3000);
         } else {
           console.log('🔄 [WhatsApp] Reconnecting in 5 seconds...');
