@@ -16,6 +16,7 @@ const transferRoutes = require('./routes/transferRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const otpRoutes = require('./routes/otpRoutes');
 const contactRoutes = require('./routes/contactRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
 
 // Import Services
 const { initializeWhatsAppClient } = require('./services/whatsappService');
@@ -106,6 +107,7 @@ app.use('/api/transfers', transferRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/otp', otpRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api', uploadRoutes);
 
 // ==========================================
 // 404 & Global Error Handling
