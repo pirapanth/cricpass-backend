@@ -2,84 +2,54 @@ const { drive, auth } = require('@googleapis/drive');
 const { Readable } = require('stream');
 
 function getDriveClient() {
-  const privateKey = process.env.GOOGLE_PRIVATE_KEY
-    ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
-    : undefined;
+  const oauth2Client = new auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    'https://developers.google.com/oauthplayground'
+  );
 
-  const googleAuth = new auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: privateKey,
-    },
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
+  oauth2Client.setCredentials({
+    refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
   });
 
-  return drive({ version: 'v3', auth: googleAuth });
+  return drive({ version: 'v3', auth: oauth2Client });
 }
 
-/**
- * Uploads an in-memory buffer to Google Drive and sets public read permissions.
- * Returns { fileId, viewUrl, downloadUrl }
- */
-async function uploadFileToDrive(buffer, mimeType, fileName) {
-  // If drive credentials are not configured, fallback gracefully for local development/testing
-  if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
-    console.warn('⚠️ [Drive Service] Google Drive credentials not set in .env. Returning simulated view URL.');
-    const mockFileId = `drive_mock_${Date.now()}`;
-    return {
-      fileId: mockFileId,
-      viewUrl: `https://drive.google.com/file/d/${mockFileId}/view`,
-      downloadUrl: `https://drive.google.com/uc?id=${mockFileId}&export=download`
-    };
-  }
-
+async function uploadFileToDrive(fileBuffer, mimeType, fileName) {
   const driveClient = getDriveClient();
-  const readableStream = new Readable();
-  readableStream.push(buffer);
-  readableStream.push(null);
 
   const fileMetadata = {
     name: fileName,
+    parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
   };
-
-  if (process.env.GOOGLE_DRIVE_FOLDER_ID) {
-    fileMetadata.parents = [process.env.GOOGLE_DRIVE_FOLDER_ID];
-  }
 
   const media = {
     mimeType: mimeType,
-    body: readableStream,
+    body: Readable.from(fileBuffer),
   };
 
   const response = await driveClient.files.create({
     requestBody: fileMetadata,
     media: media,
-    fields: 'id, name, webViewLink, webContentLink',
+    fields: 'id, webViewLink, webContentLink',
   });
 
   const fileId = response.data.id;
 
-  // Make the file viewable by anyone with the link
-  try {
-    await driveClient.permissions.create({
-      fileId: fileId,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone',
-      },
-    });
-  } catch (permErr) {
-    console.warn('⚠️ Could not set public permission on Drive file:', permErr.message);
-  }
+  // Make file viewable via link
+  await driveClient.permissions.create({
+    fileId: fileId,
+    requestBody: {
+      role: 'reader',
+      type: 'anyone',
+    },
+  });
 
   return {
     fileId: fileId,
-    viewUrl: response.data.webViewLink || `https://drive.google.com/file/d/${fileId}/view`,
-    downloadUrl: response.data.webContentLink || `https://drive.google.com/uc?id=${fileId}&export=download`,
+    viewUrl: response.data.webViewLink,
+    downloadUrl: response.data.webContentLink,
   };
 }
 
-module.exports = {
-  getDriveClient,
-  uploadFileToDrive,
-};
+module.exports = { uploadFileToDrive };
