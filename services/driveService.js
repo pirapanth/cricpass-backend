@@ -1,7 +1,13 @@
 const { drive, auth } = require('@googleapis/drive');
 const { Readable } = require('stream');
 
+let cachedDriveClient = null;
+
 function getDriveClient() {
+  if (cachedDriveClient) {
+    return cachedDriveClient;
+  }
+
   const oauth2Client = new auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
@@ -12,7 +18,8 @@ function getDriveClient() {
     refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
   });
 
-  return drive({ version: 'v3', auth: oauth2Client });
+  cachedDriveClient = drive({ version: 'v3', auth: oauth2Client });
+  return cachedDriveClient;
 }
 
 async function uploadFileToDrive(fileBuffer, mimeType, fileName) {
@@ -20,7 +27,7 @@ async function uploadFileToDrive(fileBuffer, mimeType, fileName) {
 
   const fileMetadata = {
     name: fileName,
-    parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
+    parents: process.env.GOOGLE_DRIVE_FOLDER_ID ? [process.env.GOOGLE_DRIVE_FOLDER_ID] : [],
   };
 
   const media = {
@@ -37,13 +44,17 @@ async function uploadFileToDrive(fileBuffer, mimeType, fileName) {
   const fileId = response.data.id;
 
   // Make file viewable via link
-  await driveClient.permissions.create({
-    fileId: fileId,
-    requestBody: {
-      role: 'reader',
-      type: 'anyone',
-    },
-  });
+  try {
+    await driveClient.permissions.create({
+      fileId: fileId,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
+    });
+  } catch (permErr) {
+    console.warn('⚠️ [Drive Service] Public permission warning:', permErr.message);
+  }
 
   return {
     fileId: fileId,
