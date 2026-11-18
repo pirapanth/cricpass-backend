@@ -1,32 +1,84 @@
 const nodemailer = require('nodemailer');
 const { sendWhatsAppOTP } = require('./whatsappService');
 
+let cachedTransporter = null;
+
+function getTransporter() {
+  const user = process.env.EMAIL_USER || process.env.GMAIL_USER || 'v70524817@gmail.com';
+  const pass = process.env.EMAIL_PASS || process.env.GMAIL_APP_PASS;
+
+  if (cachedTransporter) {
+    return cachedTransporter;
+  }
+
+  cachedTransporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user,
+      pass
+    }
+  });
+
+  return cachedTransporter;
+}
+
 /**
  * Dispatch an email via Gmail SMTP (Nodemailer) strictly using GMAIL_USER & GMAIL_APP_PASS
  */
-async function dispatchEmail({ to, replyTo, subject, text, html, attachments = [], fromLabel = 'CricPass Support' }) {
+async function dispatchEmail({ to, replyTo, subject, text, html, attachments = [], fromLabel = 'CricPass Admin' }) {
+  const senderEmail = process.env.EMAIL_USER || process.env.GMAIL_USER || 'v70524817@gmail.com';
+  const senderPass = process.env.EMAIL_PASS || process.env.GMAIL_APP_PASS;
   const webhookUrl = process.env.GMAIL_WEBHOOK_URL?.trim();
 
-  if (!webhookUrl) {
-    throw new Error('GMAIL_WEBHOOK_URL is required in environment variables for Render deployment.');
+  const formattedRecipient = Array.isArray(to) ? to.join(', ') : to;
+  const mailOptions = {
+    from: `"${fromLabel || 'CricPass Admin'}" <${senderEmail}>`,
+    to: formattedRecipient,
+    ...(replyTo ? { replyTo } : {}),
+    subject,
+    text,
+    html,
+    ...(attachments.length > 0 ? { attachments } : {})
+  };
+
+  // 1. Dispatch via Nodemailer (Gmail SMTP)
+  if (senderEmail && senderPass) {
+    try {
+      const transporter = getTransporter();
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`✉️ [Email Service] Email sent successfully via Nodemailer to ${formattedRecipient} (Message ID: ${info.messageId})`);
+      return { provider: 'nodemailer', id: info.messageId };
+    } catch (nodemailerError) {
+      console.error('❌ [Email Service] Nodemailer sendMail error:', nodemailerError.message);
+      if (!webhookUrl) {
+        throw nodemailerError;
+      }
+      console.warn('⚠️ [Email Service] Falling back to GMAIL_WEBHOOK_URL...');
+    }
   }
 
-  const response = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      to: Array.isArray(to) ? to.join(', ') : to,
-      replyTo: replyTo || 'v70524817@gmail.com',
-      subject,
-      html
-    })
-  });
+  // 2. Fallback to webhook if configured (e.g. environments where SMTP is blocked)
+  if (webhookUrl) {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: formattedRecipient,
+        replyTo: replyTo || senderEmail,
+        subject,
+        html,
+        from: mailOptions.from
+      })
+    });
 
-  if (!response.ok) {
-    throw new Error(`Webhook email failed with status ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`Webhook email failed with status ${response.status}`);
+    }
+
+    return { provider: 'google-apps-script', id: Date.now().toString() };
   }
 
-  return { provider: 'google-apps-script', id: Date.now().toString() };
+  throw new Error('Email service is not configured. Please set GMAIL_USER/EMAIL_USER and GMAIL_APP_PASS in environment variables.');
 }
 
 /**
@@ -91,7 +143,7 @@ async function sendEmailOTP(recipientEmail, otpCode, purpose = 'Verification') {
     subject: `[CricPass] ${otpCode} is your ${purpose} Verification Code`,
     text: `Your CricPass verification code for ${purpose} is: ${otpCode}. It is valid for 5 minutes.`,
     html: htmlContent,
-    fromLabel: 'CricPass Verification'
+    fromLabel: 'CricPass Admin'
   });
 
   return result;
@@ -179,7 +231,7 @@ async function sendTeamCredentialsEmail({ recipientEmail, teamId, teamName, pass
     subject: `[CricPass] Official Club Credentials: ${teamName} (${teamId})`,
     text: `Welcome to CricPass!\n\nYour club ${teamName} is registered.\nTeam ID: ${teamId}\nTeam Name: ${teamName}\nPassword: ${password}\n\nPlease store your credentials safely. Thank you!`,
     html: htmlContent,
-    fromLabel: 'CricPass Portal'
+    fromLabel: 'CricPass Admin'
   });
 
   return result;
