@@ -2,7 +2,11 @@ const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const Team = require('../models/Team');
 const { getRemainingCoolingOffDays, isPlayerEligibleToPlay } = require('../utils/coolingOffCalculator');
-const { formatDisplayPhone, sendPlayerRegisteredWhatsApp } = require('../services/whatsappService');
+const {
+  formatDisplayPhone,
+  sendPlayerRegisteredWhatsApp,
+  sendBulkPlayersRegisteredWhatsApp
+} = require('../services/whatsappService');
 
 /**
  * @desc    Search player by NIC number
@@ -274,9 +278,177 @@ async function getPlayerById(req, res, next) {
   }
 }
 
+/**
+ * @desc    Bulk register multiple players in a single batch operation
+ * @route   POST /api/players/bulk-register
+ * @access  Public
+ */
+async function bulkRegisterPlayers(req, res, next) {
+  try {
+    const { players, admin_phone, adminPhone } = req.body;
+
+    if (!Array.isArray(players) || players.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an array of players for bulk registration.'
+      });
+    }
+
+    // 1. Validate fields & normalize data
+    const normalized = [];
+    const seenNics = new Set();
+    const batchDuplicateNics = [];
+
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      const fullName = (p.fullName || p.full_name || '').trim();
+      const rawNic = (p.nic || p.nic_number || '').trim().toUpperCase();
+      const rawPhone = (p.phone || p.phone_number || '').trim();
+      const teamInput = p.teamId || p.current_team_id || p.team_id || null;
+      const imageUrl = (p.image_url || p.imageUrl || p.photoUrl || '').trim() || null;
+
+      if (!fullName) {
+        return res.status(400).json({
+          success: false,
+          message: `Player #${i + 1} is missing a full name.`
+        });
+      }
+
+      if (!rawNic) {
+        return res.status(400).json({
+          success: false,
+          message: `Player "${fullName}" (#${i + 1}) is missing an NIC number.`
+        });
+      }
+
+      if (!rawPhone) {
+        return res.status(400).json({
+          success: false,
+          message: `Player "${fullName}" (#${i + 1}) is missing a contact phone number.`
+        });
+      }
+
+      const formattedPhone = formatDisplayPhone(rawPhone);
+      if (!/^\+94[1-9]\d{8}$/.test(formattedPhone)) {
+        return res.status(400).json({
+          success: false,
+          message: `Player "${fullName}" has an invalid phone number (${rawPhone}). Must be +94 followed by 9 digits.`
+        });
+      }
+
+      if (seenNics.has(rawNic)) {
+        batchDuplicateNics.push(rawNic);
+      }
+      seenNics.add(rawNic);
+
+      normalized.push({
+        fullName,
+        nic: rawNic,
+        phone: formattedPhone,
+        teamInput,
+        imageUrl
+      });
+    }
+
+    if (batchDuplicateNics.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Duplicate NIC numbers detected in your bulk list: ${batchDuplicateNics.join(', ')}`
+      });
+    }
+
+    // 2. Check for existing players with these NICs in database
+    const allNics = Array.from(seenNics);
+    const existingInDb = await Player.find({ nic_number: { $in: allNics } }).select('nic_number full_name');
+    if (existingInDb.length > 0) {
+      const existingList = existingInDb.map((p) => `${p.full_name} (${p.nic_number})`).join(', ');
+      return res.status(409).json({
+        success: false,
+        message: `The following player(s) are already registered: ${existingList}`,
+        existingNics: existingInDb.map((p) => p.nic_number)
+      });
+    }
+
+    // 3. Resolve team references
+    const teamCache = new Map();
+    let primaryTeamName = null;
+    let primaryTeamPhone = null;
+
+    for (const item of normalized) {
+      if (item.teamInput) {
+        const key = String(item.teamInput).trim();
+        if (!teamCache.has(key)) {
+          let teamDoc = null;
+          if (mongoose.Types.ObjectId.isValid(key)) {
+            teamDoc = await Team.findById(key);
+          }
+          if (!teamDoc) {
+            teamDoc = await Team.findOne({
+              $or: [
+                { team_id: key.toUpperCase() },
+                { team_name: key }
+              ]
+            });
+          }
+          teamCache.set(key, teamDoc);
+          if (teamDoc && !primaryTeamName) {
+            primaryTeamName = teamDoc.team_name;
+            primaryTeamPhone = teamDoc.phone_number;
+          }
+        }
+      }
+    }
+
+    // 4. Construct documents for Player.insertMany
+    const now = new Date();
+    const docsToInsert = normalized.map((p) => {
+      let teamDoc = null;
+      if (p.teamInput) {
+        teamDoc = teamCache.get(String(p.teamInput).trim());
+      }
+
+      return {
+        full_name: p.fullName,
+        nic_number: p.nic,
+        phone_number: p.phone,
+        image_url: p.imageUrl,
+        current_team_id: teamDoc ? teamDoc._id : null,
+        status: 'ACTIVE',
+        eligible_to_play_date: now
+      };
+    });
+
+    const inserted = await Player.insertMany(docsToInsert, { ordered: true });
+
+    // 5. Consolidated single WhatsApp confirmation to admin
+    const targetPhone = admin_phone || adminPhone || primaryTeamPhone;
+    if (targetPhone) {
+      try {
+        await sendBulkPlayersRegisteredWhatsApp({
+          recipientPhone: targetPhone,
+          count: inserted.length,
+          teamName: primaryTeamName
+        });
+      } catch (waErr) {
+        console.warn('⚠️ [WhatsApp] Bulk registration WhatsApp failed:', waErr.message);
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: `Successfully registered ${inserted.length} players!`,
+      count: inserted.length,
+      data: inserted
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   searchPlayerByNic,
   registerPlayer,
+  bulkRegisterPlayers,
   getAllPlayers,
   getPlayerById
 };

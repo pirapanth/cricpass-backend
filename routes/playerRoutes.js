@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   searchPlayerByNic,
   registerPlayer,
+  bulkRegisterPlayers,
   getAllPlayers,
   getPlayerById
 } = require('../controllers/playerController');
@@ -10,8 +11,11 @@ const {
 // Search player by NIC (returns cooling off details and current team)
 router.get('/search/:nic', searchPlayerByNic);
 
-// Register a new player
+// Register a single new player
 router.post('/register', registerPlayer);
+
+// Bulk register multiple players in a single batch
+router.post('/bulk-register', bulkRegisterPlayers);
 
 // List all players (with optional filters: ?status=ACTIVE&team_id=...)
 router.get('/', getAllPlayers);

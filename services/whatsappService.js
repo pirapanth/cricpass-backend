@@ -425,6 +425,21 @@ async function sendTeamCredentialsWhatsApp({ recipientPhone, teamId, teamName, a
   return await sendNewTeamRegistrationWhatsApp({ recipientPhone, teamId, teamName, adminName, password });
 }
 
+async function sendBulkPlayersRegisteredWhatsApp({ recipientPhone, count, teamName }) {
+  const messageText =
+`🏏 *CricPass Bulk Player Registration*
+━━━━━━━━━━━━━━━━━━━━━━
+*Registration Status:* Completed Successfully ✅
+*Total Players Registered:* ${count}
+*Assigned Club:* ${teamName || 'Assigned Club'}
+
+All players have been registered and marked ACTIVE in the CricPass official registry.
+━━━━━━━━━━━━━━━━━━━━━━
+_CricPass Cricket Registry & Transfer Protocol_`;
+
+  return await sendGenericWhatsAppMessage(recipientPhone, messageText);
+}
+
 module.exports = {
   initializeWhatsAppClient,
   startTeamAdminVerification,
@@ -437,6 +452,7 @@ module.exports = {
   sendPlayerRegisteredWhatsApp,
   sendTransferCompletedWhatsApp,
   sendTeamCredentialsWhatsApp,
+  sendBulkPlayersRegisteredWhatsApp,
   formatPhoneNumber,
   formatDisplayPhone,
   isWhatsAppReady: () => isReady
