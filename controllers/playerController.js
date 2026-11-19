@@ -183,26 +183,25 @@ async function registerPlayer(req, res, next) {
       'team_id team_name admin_name admin_email phone_number image_url'
     );
 
-    // Dispatch WhatsApp notification to assigned club admin
-    if (populatedPlayer?.current_team_id?.phone_number) {
-      try {
-        await sendPlayerRegisteredWhatsApp({
-          recipientPhone: populatedPlayer.current_team_id.phone_number,
-          playerName: populatedPlayer.full_name,
-          nicNumber: populatedPlayer.nic_number,
-          playerPhone: populatedPlayer.phone_number,
-          teamName: populatedPlayer.current_team_id.team_name
-        });
-      } catch (waErr) {
-        console.warn('⚠️ [WhatsApp] Could not dispatch player registration WhatsApp:', waErr.message);
-      }
-    }
-
-    return res.status(201).json({
+    // Respond immediately to the client
+    res.status(201).json({
       success: true,
       message: 'Player registered successfully',
       data: populatedPlayer
     });
+
+    // Dispatch WhatsApp notification to assigned club admin in background
+    if (populatedPlayer?.current_team_id?.phone_number) {
+      sendPlayerRegisteredWhatsApp({
+        recipientPhone: populatedPlayer.current_team_id.phone_number,
+        playerName: populatedPlayer.full_name,
+        nicNumber: populatedPlayer.nic_number,
+        playerPhone: populatedPlayer.phone_number,
+        teamName: populatedPlayer.current_team_id.team_name
+      }).catch((waErr) => {
+        console.warn('⚠️ [WhatsApp] Could not dispatch player registration WhatsApp:', waErr.message);
+      });
+    }
   } catch (error) {
     next(error);
   }
@@ -420,26 +419,25 @@ async function bulkRegisterPlayers(req, res, next) {
 
     const inserted = await Player.insertMany(docsToInsert, { ordered: true });
 
-    // 5. Consolidated single WhatsApp confirmation to admin
-    const targetPhone = admin_phone || adminPhone || primaryTeamPhone;
-    if (targetPhone) {
-      try {
-        await sendBulkPlayersRegisteredWhatsApp({
-          recipientPhone: targetPhone,
-          count: inserted.length,
-          teamName: primaryTeamName
-        });
-      } catch (waErr) {
-        console.warn('⚠️ [WhatsApp] Bulk registration WhatsApp failed:', waErr.message);
-      }
-    }
-
-    return res.status(201).json({
+    // Respond immediately to the client
+    res.status(201).json({
       success: true,
       message: `Successfully registered ${inserted.length} players!`,
       count: inserted.length,
       data: inserted
     });
+
+    // 5. Consolidated single WhatsApp confirmation to admin in background
+    const targetPhone = admin_phone || adminPhone || primaryTeamPhone;
+    if (targetPhone) {
+      sendBulkPlayersRegisteredWhatsApp({
+        recipientPhone: targetPhone,
+        count: inserted.length,
+        teamName: primaryTeamName
+      }).catch((waErr) => {
+        console.warn('⚠️ [WhatsApp] Bulk registration WhatsApp failed:', waErr.message);
+      });
+    }
   } catch (error) {
     next(error);
   }

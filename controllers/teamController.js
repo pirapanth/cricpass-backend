@@ -363,40 +363,49 @@ async function completeTeamRegistration(req, res, next) {
 
     await team.save();
 
-    // Send WhatsApp credentials
-    try {
-      await sendNewTeamRegistrationWhatsApp({
-        recipientPhone: record.phone,
-        teamName: record.teamName,
-        teamId: generatedTeamId,
-        adminName: record.adminName,
-        password: cleanPassword
-      });
-    } catch (waErr) {
-      console.warn('⚠️ Could not dispatch WhatsApp credentials:', waErr.message);
-    }
-
-    // Send email credentials if non-placeholder
-    if (record.email && !record.email.endsWith('@cricpass.lk')) {
-      try {
-        await sendTeamCredentialsEmail({
-          recipientEmail: record.email,
-          teamId: generatedTeamId,
-          teamName: record.teamName,
-          password: cleanPassword
-        });
-      } catch (mailErr) {
-        console.warn('⚠️ Could not dispatch email credentials:', mailErr.message);
-      }
-    }
-
     // Delete temporary verification record
     await Verification.deleteOne({ _id: record._id });
 
-    return res.status(200).json({
+    // Respond immediately to the frontend so the user never encounters a 30000ms timeout error
+    res.status(200).json({
       success: true,
       teamId: generatedTeamId,
-      teamName: record.teamName
+      teamName: record.teamName,
+      message: 'Team registered successfully! Credentials have been dispatched to your WhatsApp and email.'
+    });
+
+    // Asynchronously dispatch WhatsApp and Email credentials in the background
+    (async () => {
+      // 1. WhatsApp credentials
+      try {
+        await sendNewTeamRegistrationWhatsApp({
+          recipientPhone: record.phone,
+          teamName: record.teamName,
+          teamId: generatedTeamId,
+          adminName: record.adminName,
+          password: cleanPassword
+        });
+        console.log(`✅ [WhatsApp] Team registration credentials sent to ${record.phone} for ${generatedTeamId}`);
+      } catch (waErr) {
+        console.warn('⚠️ Could not dispatch WhatsApp credentials:', waErr.message);
+      }
+
+      // 2. Email credentials if non-placeholder
+      if (record.email && !record.email.endsWith('@cricpass.lk')) {
+        try {
+          await sendTeamCredentialsEmail({
+            recipientEmail: record.email,
+            teamId: generatedTeamId,
+            teamName: record.teamName,
+            password: cleanPassword
+          });
+          console.log(`✅ [Email] Team registration credentials sent to ${record.email} for ${generatedTeamId}`);
+        } catch (mailErr) {
+          console.warn('⚠️ Could not dispatch email credentials:', mailErr.message);
+        }
+      }
+    })().catch((bgErr) => {
+      console.error('❌ [Background Delivery Error]:', bgErr.message);
     });
   } catch (error) {
     next(error);
@@ -781,25 +790,23 @@ async function changeTeamPassword(req, res, next) {
     team.password = String(new_password).trim();
     await team.save();
 
-    // Send WhatsApp notification for password change
-    try {
-      await sendPasswordChangedWhatsApp({
-        recipientPhone: team.phone_number,
-        teamName: team.team_name,
-        teamId: team.team_id,
-        newPassword: String(new_password).trim()
-      });
-    } catch (waErr) {
-      console.warn('⚠️ Could not dispatch password change WhatsApp notification:', waErr.message);
-    }
-
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       message: 'Admin password updated successfully in database!',
       data: {
         team_id: team.team_id,
         team_name: team.team_name
       }
+    });
+
+    // Send WhatsApp notification for password change in background
+    sendPasswordChangedWhatsApp({
+      recipientPhone: team.phone_number,
+      teamName: team.team_name,
+      teamId: team.team_id,
+      newPassword: String(new_password).trim()
+    }).catch((waErr) => {
+      console.warn('⚠️ Could not dispatch password change WhatsApp notification:', waErr.message);
     });
   } catch (error) {
     next(error);
@@ -957,35 +964,41 @@ async function changeTeamEmail(req, res, next) {
         ? String(new_password).trim()
         : 'Unchanged (Current Password)';
 
-    if (isEmailInput) {
-      try {
-        await sendTeamCredentialsEmail({
-          recipientEmail: team.admin_email,
-          teamId: team.team_id,
-          teamName: team.team_name,
-          password: displayPassword
-        });
-      } catch (mailErr) {
-        console.warn('⚠️ Could not dispatch new credentials email:', mailErr.message);
-      }
-    } else {
-      try {
-        await sendWhatsAppNumberChangedWhatsApp({
-          recipientPhone: team.phone_number,
-          teamId: team.team_id,
-          teamName: team.team_name,
-          password: displayPassword
-        });
-      } catch (waErr) {
-        console.warn('⚠️ Could not dispatch new credentials WhatsApp:', waErr.message);
-      }
-    }
-
     const teamObj = team.toObject();
     delete teamObj.password;
 
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
+      message: 'Phone number updated successfully',
+      data: teamObj
+    });
+
+    // Background delivery of notifications
+    (async () => {
+      if (isEmailInput) {
+        try {
+          await sendTeamCredentialsEmail({
+            recipientEmail: team.admin_email,
+            teamId: team.team_id,
+            teamName: team.team_name,
+            password: displayPassword
+          });
+        } catch (mailErr) {
+          console.warn('⚠️ Could not dispatch new credentials email:', mailErr.message);
+        }
+      } else {
+        try {
+          await sendWhatsAppNumberChangedWhatsApp({
+            recipientPhone: team.phone_number,
+            teamId: team.team_id,
+            teamName: team.team_name,
+            password: displayPassword
+          });
+        } catch (waErr) {
+          console.warn('⚠️ Could not dispatch new credentials WhatsApp:', waErr.message);
+        }
+      }
+    })().catch((err) => console.error('❌ Background notification error:', err.message));
       message: isEmailInput
         ? `Admin email updated to ${team.admin_email}. Official credentials dispatched.`
         : `Admin WhatsApp updated to ${team.phone_number}. Official credentials dispatched via WhatsApp.`,
