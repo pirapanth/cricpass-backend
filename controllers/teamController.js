@@ -969,7 +969,9 @@ async function changeTeamEmail(req, res, next) {
 
     res.status(200).json({
       success: true,
-      message: 'Phone number updated successfully',
+      message: isEmailInput
+        ? `Admin email updated to ${team.admin_email}. Official credentials dispatched.`
+        : `Admin WhatsApp updated to ${team.phone_number}. Official credentials dispatched via WhatsApp.`,
       data: teamObj
     });
 
@@ -999,11 +1001,6 @@ async function changeTeamEmail(req, res, next) {
         }
       }
     })().catch((err) => console.error('❌ Background notification error:', err.message));
-      message: isEmailInput
-        ? `Admin email updated to ${team.admin_email}. Official credentials dispatched.`
-        : `Admin WhatsApp updated to ${team.phone_number}. Official credentials dispatched via WhatsApp.`,
-      data: teamObj
-    });
   } catch (error) {
     next(error);
   }
